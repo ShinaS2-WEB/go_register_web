@@ -12,6 +12,8 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  runTransaction,
+  deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, reauthenticateWithCredential, EmailAuthProvider, updatePassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js";
 
@@ -42,6 +44,8 @@ const collections = {
   settings: "settings",
 };
 
+const ACTIVE_REGISTER_DOCUMENT = "__active__";
+
 const themeOptions = [
   ["classic", "Classico"],
   ["emerald", "Esmeralda"],
@@ -70,6 +74,8 @@ const state = {
   theme: initialTheme(),
   darkTheme: false,
   sidebarCollapsed: false,
+  activeRegisterControl: null,
+  activeRegisterControlInitialized: false,
   data: {
     products: [],
     sales: [],
@@ -526,10 +532,47 @@ function tenantCollection(collectionName) {
 function tenantDocument(collectionName, id) {
   return doc(tenantCollection(collectionName), String(id));
 }
+
+function currentOpenRegister() {
+  if (state.activeRegisterControlInitialized) {
+    return state.activeRegisterControl?.isOpen === true ? state.activeRegisterControl : null;
+  }
+
+  // Compatibilidade apenas para empresas ainda não migradas para o documento __active__.
+  return state.data.registers
+    .filter((item) => item.isOpen === true)
+    .sort((a, b) => {
+      const timeDifference = (Number(b.openingTimestamp) || 0) - (Number(a.openingTimestamp) || 0);
+      return timeDifference || (Number(b.id) || 0) - (Number(a.id) || 0);
+    })[0] || null;
+}
+
+async function closeOlderOpenRegisters(activeRegister) {
+  const activeId = Number(activeRegister.id);
+  const activeTimestamp = Number(activeRegister.openingTimestamp) || 0;
+  const staleRegisters = state.data.registers.filter((item) =>
+    item.isOpen === true &&
+    Number(item.id) !== activeId &&
+    (Number(item.openingTimestamp) || 0) <= activeTimestamp
+  );
+  if (!staleRegisters.length) return;
+
+  const closedAt = Date.now();
+  await Promise.all(staleRegisters.map((item) => updateDoc(
+    tenantDocument(collections.registers, item.docId || tenantDocId(item.id)),
+    {
+      isOpen: false,
+      open: deleteField(),
+      closingTimestamp: item.closingTimestamp || closedAt,
+    }
+  )));
+}
 function clearSubscriptions() {
   unsubscribers.forEach((unsubscribe) => unsubscribe());
   unsubscribers = [];
   state.loadedCollections.clear();
+  state.activeRegisterControl = null;
+  state.activeRegisterControlInitialized = false;
   Object.keys(state.data).forEach((key) => { state.data[key] = []; });
 }
 
@@ -565,7 +608,19 @@ function subscribe() {
     }
     const unsubscribe = onSnapshot(tenantCollection(name), (snapshot) => {
       const dataKey = key === "registers" ? "registers" : key;
-      state.data[dataKey] = snapshot.docs.map((item) => ({ ...item.data(), docId: item.id })).sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+      if (dataKey === "registers") {
+        const controlDocument = snapshot.docs.find((item) => item.id === ACTIVE_REGISTER_DOCUMENT);
+        state.activeRegisterControlInitialized = Boolean(controlDocument);
+        state.activeRegisterControl = controlDocument
+          ? { ...controlDocument.data(), docId: controlDocument.id }
+          : null;
+      }
+      const visibleDocuments = dataKey === "registers"
+        ? snapshot.docs.filter((item) => item.id !== ACTIVE_REGISTER_DOCUMENT)
+        : snapshot.docs;
+      state.data[dataKey] = visibleDocuments
+        .map((item) => ({ ...item.data(), docId: item.id }))
+        .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
       if (dataKey === "products") syncCartProducts();
       if (dataKey === "users") syncSessionUser();
       state.loadedCollections.add(key);
@@ -975,7 +1030,7 @@ function renderGroupedTransactionRows(transactions) {
 }
 
 function renderPos() {
-  const openRegister = state.data.registers.find((item) => item.isOpen);
+  const openRegister = currentOpenRegister();
   if (!openRegister) {
     return `<section class="panel" style="min-height: 420px; display:grid; place-items:center;"><div style="text-align:center">${icon("shopping_cart")}<h2>Por favor, ABRA o caixa primeiro!</h2><button class="btn" data-action="open-register">${icon("lock_open")} Abrir Caixa</button></div></section>`;
   }
@@ -1091,7 +1146,7 @@ function tableSection(searchId, headers, rows) {
 }
 
 function renderCash() {
-  const open = state.data.registers.find((item) => item.isOpen);
+  const open = currentOpenRegister();
   const report = open ? registerReport(open) : null;
   return `
     <section class="section">
@@ -2320,39 +2375,91 @@ function downloadBlob(blob, filename, type) {
 }
 
 function openRegisterModal() {
+  const alreadyOpen = currentOpenRegister();
+  if (alreadyOpen) {
+    toast("Já existe um caixa aberto nesta empresa.");
+    return;
+  }
+
   openModal("Abrir Caixa", input("initialBalance", "Saldo inicial", 0, "number"), async (form) => {
-    const id = nextId(state.data.registers);
-    const registerDocumentId = tenantDocId(id);
-    const register = {
-      id,
-      openingTimestamp: Date.now(),
-      closingTimestamp: null,
-      initialBalance: parseDecimal(form.get("initialBalance")),
-      closingBalance: null,
-      userId: Number(state.user.id) || 0,
-      isOpen: true,
-    };
-    await setDoc(tenantDocument(collections.registers, registerDocumentId), tenantPayload(register));
-    state.data.registers = [...state.data.registers.filter((item) => Number(item.id) !== Number(id)), { ...register, empresa_id: tenantId(), docId: registerDocumentId }];
+    const existingBeforeTransaction = currentOpenRegister();
+    const controlReference = tenantDocument(collections.registers, ACTIVE_REGISTER_DOCUMENT);
+
+    const activeRegister = await runTransaction(db, async (transaction) => {
+      const controlSnapshot = await transaction.get(controlReference);
+      const currentControl = controlSnapshot.exists()
+        ? { ...controlSnapshot.data(), docId: controlSnapshot.id }
+        : null;
+
+      if (currentControl?.isOpen === true) return currentControl;
+
+      if (!controlSnapshot.exists() && existingBeforeTransaction?.isOpen === true) {
+        const normalizedExisting = tenantPayload(existingBeforeTransaction);
+        transaction.set(controlReference, normalizedExisting);
+        return existingBeforeTransaction;
+      }
+
+      const id = Date.now();
+      const register = {
+        id,
+        openingTimestamp: id,
+        closingTimestamp: null,
+        initialBalance: parseDecimal(form.get("initialBalance")),
+        closingBalance: null,
+        userId: Number(state.user.id) || 0,
+        isOpen: true,
+      };
+      const payload = tenantPayload(register);
+
+      transaction.set(tenantDocument(collections.registers, id), payload);
+      transaction.set(controlReference, payload);
+      return { ...register, empresa_id: tenantId(), companyId: tenantId(), docId: String(id) };
+    });
+
+    await closeOlderOpenRegisters(activeRegister);
     toast("Caixa aberto.");
   });
 }
 
 async function closeRegister() {
-  const open = state.data.registers.find((item) => item.isOpen);
+  const open = currentOpenRegister();
   if (!open) return;
-  const form = await openFormDialog("Fechar Caixa", input("closingBalance", "Saldo final do caixa", open.initialBalance || 0, "number"), "Fechar caixa", "lock", "danger");
+
+  const form = await openFormDialog(
+    "Fechar Caixa",
+    input("closingBalance", "Saldo final do caixa", open.initialBalance || 0, "number"),
+    "Fechar caixa",
+    "lock",
+    "danger"
+  );
   if (!form) return;
-  const closing = form.get("closingBalance");
+
+  const closingBalance = parseDecimal(form.get("closingBalance"));
   await runAction(async () => {
-    const patch = {
-      closingTimestamp: Date.now(),
-      closingBalance: parseDecimal(closing),
-      isOpen: false,
-    };
-    await updateDoc(tenantDocument(collections.registers, open.docId || tenantDocId(open.id)), patch);
-    state.data.registers = state.data.registers.map((item) => Number(item.id) === Number(open.id) ? { ...item, ...patch } : item);
-    renderApp();
+    const controlReference = tenantDocument(collections.registers, ACTIVE_REGISTER_DOCUMENT);
+
+    await runTransaction(db, async (transaction) => {
+      const controlSnapshot = await transaction.get(controlReference);
+      const cloudActive = controlSnapshot.exists()
+        ? { ...controlSnapshot.data(), docId: controlSnapshot.id }
+        : null;
+      if (cloudActive?.isOpen !== true) {
+        throw new Error("Este caixa já foi fechado em outro dispositivo.");
+      }
+      if (Number(cloudActive.id) !== Number(open.id)) {
+        throw new Error("O caixa ativo mudou em outro dispositivo. Atualize a tela antes de fechar.");
+      }
+
+      const closed = tenantPayload({
+        ...cloudActive,
+        closingTimestamp: Date.now(),
+        closingBalance,
+        isOpen: false,
+      });
+
+      transaction.set(tenantDocument(collections.registers, cloudActive.id), closed);
+      transaction.set(controlReference, closed);
+    });
   }, "Caixa fechado.");
 }
 
@@ -2366,7 +2473,7 @@ function openMovementModal(kind) {
   `, async (form) => {
     const list = isEntry ? state.data.entries : state.data.exits;
     const collectionName = isEntry ? collections.entries : collections.exits;
-    const open = state.data.registers.find((item) => item.isOpen);
+    const open = currentOpenRegister();
     const id = nextId(list);
     const description = String(form.get("description") || "").trim();
     await setDoc(tenantDocument(collectionName, id), tenantPayload({
@@ -2447,7 +2554,7 @@ async function cancelTransaction(kind, id) {
 }
 
 async function checkout(paymentMethod) {
-  const open = state.data.registers.find((item) => item.isOpen);
+  const open = currentOpenRegister();
   if (!open || !state.cart.length) return;
   const id = nextId(state.data.sales.map((item) => saleData(item)));
   const total = state.cart.reduce((sum, item) => sum + item.product.sellingPrice * item.quantity, 0);
