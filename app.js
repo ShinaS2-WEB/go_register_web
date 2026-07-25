@@ -247,6 +247,12 @@ function paymentMethodGroupLabel(recordOrMethod) {
   return labels[group] || paymentMethodLabel(recordOrMethod);
 }
 
+function financialMovementSubtitle(record) {
+  const payment = paymentMethodLabel(record);
+  const category = String(record?.category || "").trim();
+  return category ? `${payment} - ${category}` : payment;
+}
+
 function safeSessionUser(user) {
   if (!user) return null;
   const { passwordHash, sessionToken, ...safeUser } = user;
@@ -923,22 +929,22 @@ function allTransactions() {
     id: item.id,
     kind: "entry",
     title: item.description || "Entrada",
-    subtitle: item.category || paymentMethodLabel(item.paymentMethod),
+    subtitle: financialMovementSubtitle(item),
     amount: Number(item.amount) || 0,
     timestamp: Number(item.timestamp) || 0,
     isCancelled: Boolean(item.isCancelled),
-    method: item.paymentMethod,
+    method: paymentMethodValue(item),
     refId: docKey(item, item.id),
   }));
   const exits = state.data.exits.map((item) => ({
     id: item.id,
     kind: "exit",
     title: item.description || "Saida",
-    subtitle: item.category || paymentMethodLabel(item.paymentMethod),
+    subtitle: financialMovementSubtitle(item),
     amount: Number(item.amount) || 0,
     timestamp: Number(item.timestamp) || 0,
     isCancelled: Boolean(item.isCancelled),
-    method: item.paymentMethod,
+    method: paymentMethodValue(item),
     refId: docKey(item, item.id),
   }));
   return [...saleRows, ...entries, ...exits].sort((a, b) => b.timestamp - a.timestamp);
@@ -1310,7 +1316,7 @@ function reportFinancialMovements(bounds) {
     timestamp: Number(item.timestamp) || 0,
     description: item.description || (kind === "entry" ? "Entrada" : "Saida"),
     category: String(item.category || "").trim(),
-    paymentMethod: item.paymentMethod,
+    paymentMethod: paymentMethodValue(item),
     cashRegisterId: item.cashRegisterId,
     amount: Number(item.amount) || 0,
     isCancelled: Boolean(item.isCancelled),
