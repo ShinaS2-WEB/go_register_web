@@ -675,7 +675,7 @@ function renderCompanyLogin(error = "") {
         <p class="muted login-subtitle">Selecione sua empresa para continuar</p>
         <label class="field">
           <span>Empresa</span>
-          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Código, CNPJ ou acesso" required /></span>
+          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Identificador da empresa" required /></span>
         </label>
         <p class="error">${escapeHtml(error)}</p>
         <button class="btn full" type="submit">Continuar</button>
