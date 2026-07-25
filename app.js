@@ -911,7 +911,7 @@ function allTransactions() {
       id: saleId,
       kind: "sale",
       title: saleTransactionTitle(item),
-      subtitle: `${paymentMethodLabel(item)} - Venda #${saleId ?? "-"}`,
+      subtitle: paymentMethodLabel(item),
       amount: saleAmount(item),
       timestamp: saleTimestamp(item),
       isCancelled: saleIsCancelled(item),
@@ -947,7 +947,7 @@ function allTransactions() {
 function saleTransactionTitle(record) {
   const products = saleProductNames(record);
   if (products && products !== "N/A") return products;
-  return `Venda #${saleData(record).id ?? record?.docId ?? "-"}`;
+  return "Venda";
 }
 
 function renderDashboard() {
