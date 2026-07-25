@@ -44,7 +44,6 @@ const collections = {
   settings: "settings",
 };
 
-// IDs no formato __...__ são reservados pelo Firestore.
 const ACTIVE_REGISTER_DOCUMENT = "active_register";
 
 const themeOptions = [
@@ -539,7 +538,7 @@ function currentOpenRegister() {
     return state.activeRegisterControl?.isOpen === true ? state.activeRegisterControl : null;
   }
 
-  // Compatibilidade com empresas ainda não migradas para o documento de controle.
+  // Compatibilidade apenas para empresas ainda não migradas para o documento active_register.
   return state.data.registers
     .filter((item) => item.isOpen === true)
     .sort((a, b) => {
@@ -2445,16 +2444,15 @@ async function closeRegister() {
         ? { ...controlSnapshot.data(), docId: controlSnapshot.id }
         : null;
 
-      // Migra e fecha corretamente um caixa antigo que ainda não possua
-      // o documento de controle compartilhado.
-      if (!cloudActive && open?.id != null) {
-        const registerReference = tenantDocument(
+      // Migração segura para caixas criados antes do documento de controle existir.
+      if (cloudActive?.isOpen !== true && !controlSnapshot.exists()) {
+        const legacyReference = tenantDocument(
           collections.registers,
           open.docId || tenantDocId(open.id)
         );
-        const registerSnapshot = await transaction.get(registerReference);
-        cloudActive = registerSnapshot.exists()
-          ? { ...registerSnapshot.data(), docId: registerSnapshot.id }
+        const legacySnapshot = await transaction.get(legacyReference);
+        cloudActive = legacySnapshot.exists()
+          ? { ...legacySnapshot.data(), docId: legacySnapshot.id }
           : null;
       }
 
