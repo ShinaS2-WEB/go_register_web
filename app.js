@@ -121,9 +121,9 @@ const dateOnly = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium" });
 const paymentLabels = {
   CASH: "Dinheiro",
   PIX: "Pix",
-  DEBIT_CARD: "Cartao de Debito",
-  CREDIT_CARD: "Cartao de Credito",
-  CREDIT_CREDIT: "Cartao de Credito",
+  DEBIT_CARD: "Cartão de Débito",
+  CREDIT_CARD: "Cartão de Crédito",
+  CREDIT_CREDIT: "Cartão de Crédito",
 };
 
 const paymentOptions = [
@@ -444,6 +444,13 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function formatTaxId(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 11) return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
+  if (digits.length === 14) return digits.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
+  return String(value || "").trim();
 }
 
 function parseDecimal(value) {
@@ -2531,7 +2538,121 @@ function openStockAdjustModal(selectedProduct = null) {
 
 function openCheckoutModal() {
   openModal("Forma de Pagamento", select("paymentMethod", "Pagamento", paymentOptions, "CASH"), async (form) => {
-    await checkout(form.get("paymentMethod"));
+    return checkout(form.get("paymentMethod"));
+  });
+}
+
+function receiptText(sale, items, company) {
+  const saleNumber = sale.id ?? sale.docId;
+  const lines = [
+    "Comprovante de Venda",
+    `Venda: ${saleNumber}`,
+    String(company.name || "GO REGISTER"),
+    formatTaxId(company.taxId),
+    String(company.address || ""),
+    String(company.phone || ""),
+    dateTime.format(new Date(sale.timestamp)),
+    `Pagamento: ${paymentMethodLabel(sale.paymentMethod)}`,
+    "",
+    ...items.flatMap((item) => [
+      String(item.productName || "Produto"),
+      `${item.quantity} × ${money.format(item.unitPrice)} = ${money.format(item.subtotal)}`,
+    ]),
+  ].filter((line) => line !== "");
+  if (Number(sale.discount) > 0) lines.push(`Desconto: ${money.format(sale.discount)}`);
+  lines.push(`Total recebido: ${money.format(sale.finalAmount)}`);
+  lines.push(String(company.receiptFooter || "Obrigado pela preferência!"));
+  return lines.join("\n");
+}
+
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  const copied = document.execCommand("copy");
+  field.remove();
+  if (!copied) throw new Error("Falha ao copiar.");
+}
+
+function receiptHtml(sale, items, company) {
+  const saleNumber = sale.id ?? sale.docId;
+  if (saleNumber == null || String(saleNumber) === "" || Number(saleNumber) === 0) {
+    throw new Error("A venda salva não possui um número de comprovante válido.");
+  }
+  return `
+    <article class="receipt-paper" id="saleReceipt">
+      <header class="receipt-heading">
+        <h2>Comprovante de Venda</h2>
+        <strong>${escapeHtml(company.name || "GO REGISTER")}</strong>
+        ${company.taxId ? `<span>CPF/CNPJ: ${escapeHtml(formatTaxId(company.taxId))}</span>` : ""}
+        ${company.address ? `<span>${escapeHtml(company.address)}</span>` : ""}
+        ${company.phone ? `<span>Telefone: ${escapeHtml(company.phone)}</span>` : ""}
+      </header>
+      <dl class="receipt-meta">
+        <div><dt>Venda</dt><dd>#${escapeHtml(saleNumber)}</dd></div>
+        <div><dt>Data</dt><dd>${escapeHtml(dateTime.format(new Date(sale.timestamp)))}</dd></div>
+        <div><dt>Pagamento</dt><dd>${escapeHtml(paymentMethodLabel(sale.paymentMethod))}</dd></div>
+      </dl>
+      <div class="receipt-items">
+        ${items.map((item) => `
+          <div class="receipt-item">
+            <strong>${escapeHtml(item.productName || "Produto")}</strong>
+            <span>${escapeHtml(item.quantity)} × ${escapeHtml(money.format(item.unitPrice))}</span>
+            <b>${escapeHtml(money.format(item.subtotal))}</b>
+          </div>
+        `).join("")}
+      </div>
+      <div class="receipt-totals">
+        ${Number(sale.discount) > 0 ? `<div><span>Desconto</span><strong>− ${escapeHtml(money.format(sale.discount))}</strong></div>` : ""}
+        <div class="receipt-grand-total"><span>Total recebido</span><strong>${escapeHtml(money.format(sale.finalAmount))}</strong></div>
+      </div>
+      <footer class="receipt-message">${escapeHtml(company.receiptFooter || "Obrigado pela preferência!")}</footer>
+    </article>
+  `;
+}
+
+function openReceiptModal(sale, items) {
+  const company = { ...state.company };
+  document.querySelector("#modalRoot").innerHTML = `
+    <div class="modal-backdrop receipt-modal-backdrop">
+      <section class="modal receipt-modal" role="dialog" aria-modal="true" aria-labelledby="receiptTitle">
+        <header><h2 id="receiptTitle">Venda concluída</h2><button class="icon-btn" type="button" data-close-receipt>${icon("close")}</button></header>
+        <div class="receipt-scroll">${receiptHtml(sale, items, company)}</div>
+        <footer class="receipt-actions">
+          <button class="btn secondary" type="button" data-close-receipt>${icon("close")} Fechar</button>
+          <button class="btn secondary" type="button" data-print-receipt>${icon("print")} Imprimir</button>
+          <button class="btn" type="button" data-share-receipt>${icon("share")} Compartilhar</button>
+        </footer>
+      </section>
+    </div>
+  `;
+  document.querySelectorAll("[data-close-receipt]").forEach((button) => button.addEventListener("click", closeModal));
+  document.querySelector("[data-print-receipt]").addEventListener("click", () => {
+    document.body.classList.add("receipt-printing");
+    window.addEventListener("afterprint", () => document.body.classList.remove("receipt-printing"), { once: true });
+    window.print();
+    setTimeout(() => document.body.classList.remove("receipt-printing"), 1000);
+  });
+  document.querySelector("[data-share-receipt]").addEventListener("click", async () => {
+    const text = receiptText(sale, items, company);
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: `Comprovante de venda #${sale.id ?? sale.docId}`, text });
+        return;
+      }
+      await copyText(text);
+      toast("Comprovante copiado.");
+    } catch (error) {
+      if (error?.name !== "AbortError") toast("Não foi possível compartilhar o comprovante.");
+    }
   });
 }
 
@@ -2583,10 +2704,17 @@ async function checkout(paymentMethod) {
     cashRegisterId: Number(open.id) || 0,
     isCancelled: false,
   };
+  const receiptItems = state.cart.map((item) => ({
+    productName: String(item.product.name || "Produto"),
+    quantity: Number(item.quantity) || 0,
+    unitPrice: Number(item.product.sellingPrice) || 0,
+    subtotal: (Number(item.product.sellingPrice) || 0) * (Number(item.quantity) || 0),
+  }));
   const items = state.cart.map((item, index) => ({
     id: id * 1000 + index + 1,
     saleId: id,
     productId: Number(item.product.id),
+    productName: String(item.product.name || "Produto"),
     quantity: item.quantity,
     tracksStock: productTracksStock(item.product),
     unitPrice: Number(item.product.sellingPrice) || 0,
@@ -2604,6 +2732,7 @@ async function checkout(paymentMethod) {
   state.discount = 0;
   toast("Venda finalizada.");
   renderApp();
+  return () => openReceiptModal(sale, receiptItems);
 }
 
 async function updateProductStock(productId, stockQuantity) {
