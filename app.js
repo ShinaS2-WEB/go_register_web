@@ -44,7 +44,8 @@ const collections = {
   settings: "settings",
 };
 
-const ACTIVE_REGISTER_DOCUMENT = "__active__";
+// IDs no formato __...__ são reservados pelo Firestore.
+const ACTIVE_REGISTER_DOCUMENT = "active_register";
 
 const themeOptions = [
   ["classic", "Classico"],
@@ -538,7 +539,7 @@ function currentOpenRegister() {
     return state.activeRegisterControl?.isOpen === true ? state.activeRegisterControl : null;
   }
 
-  // Compatibilidade apenas para empresas ainda não migradas para o documento __active__.
+  // Compatibilidade com empresas ainda não migradas para o documento de controle.
   return state.data.registers
     .filter((item) => item.isOpen === true)
     .sort((a, b) => {
@@ -2440,9 +2441,23 @@ async function closeRegister() {
 
     await runTransaction(db, async (transaction) => {
       const controlSnapshot = await transaction.get(controlReference);
-      const cloudActive = controlSnapshot.exists()
+      let cloudActive = controlSnapshot.exists()
         ? { ...controlSnapshot.data(), docId: controlSnapshot.id }
         : null;
+
+      // Migra e fecha corretamente um caixa antigo que ainda não possua
+      // o documento de controle compartilhado.
+      if (!cloudActive && open?.id != null) {
+        const registerReference = tenantDocument(
+          collections.registers,
+          open.docId || tenantDocId(open.id)
+        );
+        const registerSnapshot = await transaction.get(registerReference);
+        cloudActive = registerSnapshot.exists()
+          ? { ...registerSnapshot.data(), docId: registerSnapshot.id }
+          : null;
+      }
+
       if (cloudActive?.isOpen !== true) {
         throw new Error("Este caixa já foi fechado em outro dispositivo.");
       }
