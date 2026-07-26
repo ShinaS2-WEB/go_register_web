@@ -1,0 +1,17 @@
+{
+  "name": "go-register-web-tests",
+  "private": true,
+  "scripts": {
+    "test": "npm --prefix functions test",
+    "test:rules": "node --test tests/firestore.rules.test.js",
+    "test:emulator": "node --test --test-concurrency=1 tests/*.test.js",
+    "emulators:test": "firebase emulators:exec --only firestore,auth \"npm run test:emulator\"",
+    "migrate:dry-run": "node scripts/firestore-migrate.js",
+    "migrate:apply": "node scripts/firestore-migrate.js --apply --backup-confirmed"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase-admin": "^14.2.0",
+    "firebase-tools": "^14.11.1"
+  }
+}

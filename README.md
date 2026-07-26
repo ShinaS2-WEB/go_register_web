@@ -43,3 +43,30 @@ Instale as dependências com `npm install`. Use `npm run test:rules` para valida
 ## Status
 
 Projeto em desenvolvimento ativo, com foco em paridade entre a experiencia web e o aplicativo GO REGISTER.
+# Backend seguro
+
+O GitHub Pages publica apenas `index.html`, `app.js`, `styles.css`, `assets/` e `admin/`. Functions, regras e índices têm deploy separado e manual.
+
+## Desenvolvimento e testes
+
+```bash
+npm ci
+npm ci --prefix functions
+npm test
+npx firebase-tools emulators:start --only auth,firestore,functions
+npm run emulators:test
+```
+
+Deploy manual, após os testes:
+
+```bash
+npx firebase-tools deploy --project goregister-7394b --only firestore:rules,firestore:indexes,functions
+```
+
+O workflow `firebase-deploy.yml` requer ambiente GitHub protegido `production` e secrets `FIREBASE_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER` e `GCP_SERVICE_ACCOUNT`. Configure projetos separados de homologação e produção; nunca reutilize dados ou credenciais reais nos testes.
+
+Veja [docs/firestore-data-contract.md](docs/firestore-data-contract.md) para o contrato compartilhado com Android e [docs/migration.md](docs/migration.md) antes de migrar dados.
+
+O painel da plataforma usa callable Functions para criar, editar e desativar empresas, administradores e usuários. A exclusão normal de empresa é uma desativação com revogação de contas; `permanentlyDeleteCompany` é uma operação separada que exige empresa previamente inativa e confirmação `DELETE:<companyId>`.
+
+Históricos operacionais usam listeners limitados aos 200 registros mais recentes e carregamento sob demanda. Produtos excluídos recebem tombstone e continuam disponíveis para relatórios e sincronização histórica.

@@ -1,7 +1,7 @@
 mobile
 .agents
 .codex
-.README_INTERNO.md
+links.md
 node_modules
 .firebase
 firebase-debug.log

@@ -8,6 +8,8 @@ import {
   onSnapshot,
   query,
   where,
+  orderBy,
+  startAfter,
   limit,
   setDoc,
   updateDoc,
@@ -16,6 +18,7 @@ import {
   deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, reauthenticateWithCredential, EmailAuthProvider, updatePassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-functions.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDaNbVpvkGov4vtabbk-bAWOpb7nDpmzrA",
@@ -29,6 +32,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
+const functions = getFunctions(app, "southamerica-east1");
 const root = document.querySelector("#app");
 
 const collections = {
@@ -59,6 +63,12 @@ const themeOptions = [
 ];
 
 const darkThemes = new Set(["midnight", "graphite", "ocean", "forest", "wine", "contrast"]);
+
+function defaultLocalDateInput() {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Belem", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
 
 function initialTheme() {
   const savedTheme = localStorage.getItem("goRegisterTheme");
@@ -93,7 +103,7 @@ const state = {
   filters: {
     cashHistoryDate: "",
     reportsPeriod: "all",
-    reportsDate: new Date().toISOString().slice(0, 10),
+    reportsDate: defaultLocalDateInput(),
     reportsMonth: new Date().getMonth(),
   },
   discount: 0,
@@ -101,6 +111,7 @@ const state = {
   loadedCollections: new Set(),
   firebaseError: "",
   lastSync: null,
+  historyCursors: {},
 };
 let unsubscribers = [];
 
@@ -214,6 +225,10 @@ function normalizePaymentMethod(value) {
     .replace(/[\s-]+/g, "_")
     .toUpperCase();
   const aliases = {
+    CREDIT_CREDIT: "CREDIT_CARD",
+    CARD_CREDIT: "CREDIT_CARD",
+    CREDIT: "CREDIT_CARD",
+    DEBIT: "DEBIT_CARD",
     DINHEIRO: "CASH",
     CARTAO_DE_DEBITO: "DEBIT_CARD",
     CARTAO_DE_CREDITO: "CREDIT_CARD",
@@ -388,23 +403,45 @@ function nextId(items) {
   return Math.max(0, ...items.map((item) => Number(item.id ?? item.docId) || 0)) + 1;
 }
 
+function companyTimezone() {
+  return state.company?.timezone || "America/Belem";
+}
+
+function zonedParts(date, timezone = companyTimezone()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  return Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]));
+}
+
+function zonedMidnight(year, month, day, timezone = companyTimezone()) {
+  let instant = Date.UTC(year, month - 1, day);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = zonedParts(new Date(instant), timezone);
+    const represented = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+    instant += Date.UTC(year, month - 1, day) - represented;
+  }
+  return instant;
+}
+
 function todayBounds(offset = 0) {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() + offset);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return [start.getTime(), end.getTime()];
+  const parts = zonedParts(new Date());
+  const target = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + offset));
+  const start = zonedMidnight(target.getUTCFullYear(), target.getUTCMonth() + 1, target.getUTCDate());
+  const next = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate() + 1));
+  const end = zonedMidnight(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate());
+  return [start, end];
 }
 
 function dateInputBounds(value) {
   if (!value) return null;
   const [year, month, day] = String(value).split("-").map(Number);
   if (!year || !month || !day) return null;
-  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return [start.getTime(), end.getTime()];
+  const start = zonedMidnight(year, month, day);
+  const next = new Date(Date.UTC(year, month - 1, day + 1));
+  const end = zonedMidnight(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate());
+  return [start, end];
 }
 
 function formatDateInputLabel(value) {
@@ -460,13 +497,36 @@ function formatTaxId(value) {
 }
 
 function parseDecimal(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  const normalized = String(value ?? "")
-    .trim()
-    .replace(/\./g, "")
-    .replace(",", ".");
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return parseMoneyToCents(value) / 100;
+}
+
+function parseMoneyToCents(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.round(value * 100) : 0;
+  let text = String(value ?? "").trim().replace(/^R\$\s*/i, "").replace(/\s/g, "");
+  if (!text) return 0;
+  const comma = text.lastIndexOf(",");
+  const dot = text.lastIndexOf(".");
+  if (comma >= 0 && dot >= 0) {
+    const decimal = comma > dot ? "," : ".";
+    const thousands = decimal === "," ? /\./g : /,/g;
+    text = text.replace(thousands, "").replace(decimal, ".");
+  } else if (comma >= 0 || dot >= 0) {
+    const separator = comma >= 0 ? "," : ".";
+    const parts = text.split(separator);
+    text = parts.length === 2 && parts[1].length <= 2
+      ? `${parts[0].replace(/[.,]/g, "")}.${parts[1]}`
+      : parts.join("");
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
+}
+
+function formatMoneyFromCents(cents) {
+  return money.format((Number(cents) || 0) / 100);
+}
+
+function callFunction(name, data) {
+  return httpsCallable(functions, name)(data).then((result) => result.data);
 }
 
 function formatDecimalInput(value) {
@@ -586,6 +646,7 @@ function clearSubscriptions() {
   state.loadedCollections.clear();
   state.activeRegisterControl = null;
   state.activeRegisterControlInitialized = false;
+  state.historyCursors = {};
   Object.keys(state.data).forEach((key) => { state.data[key] = []; });
 }
 
@@ -619,7 +680,11 @@ function subscribe() {
       state.loadedCollections.add(key);
       return;
     }
-    const unsubscribe = onSnapshot(tenantCollection(name), (snapshot) => {
+    const historicalOrder = { sales: "timestamp", registers: "openingTimestamp", entries: "timestamp", exits: "timestamp", stockMovements: "timestamp" };
+    const source = historicalOrder[key]
+      ? query(tenantCollection(name), orderBy(historicalOrder[key], "desc"), limit(200))
+      : tenantCollection(name);
+    const unsubscribe = onSnapshot(source, (snapshot) => {
       const dataKey = key === "registers" ? "registers" : key;
       if (dataKey === "registers") {
         const controlDocument = snapshot.docs.find((item) => item.id === ACTIVE_REGISTER_DOCUMENT);
@@ -634,6 +699,7 @@ function subscribe() {
       state.data[dataKey] = visibleDocuments
         .map((item) => ({ ...item.data(), docId: item.id }))
         .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+      if (historicalOrder[key]) state.historyCursors[key] = snapshot.docs.at(-1) || null;
       if (dataKey === "products") syncCartProducts();
       if (dataKey === "users") syncSessionUser();
       state.loadedCollections.add(key);
@@ -665,7 +731,7 @@ function syncCartProducts() {
   state.cart = state.cart
     .map((item) => {
       const freshProduct = findById(state.data.products, item.product.id);
-      if (!freshProduct) return null;
+      if (!freshProduct || freshProduct.isDeleted === true || freshProduct.isActive === false) return null;
       return {
         product: freshProduct,
         quantity: productTracksStock(freshProduct) ? Math.min(item.quantity, Number(freshProduct.stockQuantity) || 0) : item.quantity,
@@ -770,10 +836,7 @@ async function requestCancellationAuthorization() {
     <p class="muted">Informe a senha de cancelamento para confirmar esta operacao.</p>
     ${input("password", "Senha de cancelamento", "", "password")}
   `, "Cancelar transacao", "cancel", "danger");
-  if (!form) return false;
-  const allowed = await verifyCancellationPassword(form.get("password"));
-  if (!allowed) toast("Senha de cancelamento invalida.");
-  return allowed;
+  return form ? String(form.get("password") || "") : "";
 }
 
 async function changeCancellationPassword() {
@@ -789,14 +852,7 @@ async function changeCancellationPassword() {
   if (!isAllowedPassword(password)) return toast("A senha deve ter pelo menos 6 caracteres, ou use admin.");
   if (password !== confirmPassword) return toast("As senhas nao conferem.");
   await runAction(async () => {
-    const setting = {
-      id: "cancellation",
-      passwordHash: await hashPassword(password),
-      updatedAt: Date.now(),
-      updatedBy: Number(currentUser()?.id) || 0,
-    };
-    await setDoc(tenantDocument(collections.settings, "cancellation"), tenantPayload({ ...setting, id: "cancellation" }));
-    state.data.settings = [...state.data.settings.filter((item) => item.id !== "cancellation"), { ...setting, id: "cancellation", empresa_id: tenantId(), docId: tenantDocId("cancellation") }];
+    await callFunction("setCancellationPassword", { companyId: tenantId(), password });
   }, "Senha de cancelamento alterada.");
 }
 
@@ -892,6 +948,7 @@ function renderTopActions() {
   if (state.view === "categories") return `<button class="btn" data-action="category-new">${icon("add")} Categoria</button>`;
   if (state.view === "suppliers") return `<button class="btn" data-action="supplier-new">${icon("add")} Fornecedor</button>`;
   if (state.view === "users" && isAdmin()) return `<button class="btn" data-action="user-new">${icon("add")} Usuario</button>`;
+  if (["stockHistory", "cashHistory", "reports"].includes(state.view)) return `<button class="btn secondary" data-action="load-more-history">${icon("expand_more")} Carregar histórico anterior</button>`;
   return "";
 }
 
@@ -1047,7 +1104,7 @@ function renderPos() {
   if (!openRegister) {
     return `<section class="panel" style="min-height: 420px; display:grid; place-items:center;"><div style="text-align:center">${icon("shopping_cart")}<h2>Por favor, ABRA o caixa primeiro!</h2><button class="btn" data-action="open-register">${icon("lock_open")} Abrir Caixa</button></div></section>`;
   }
-  const filtered = state.data.products.filter((item) => `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()));
+  const filtered = state.data.products.filter((item) => item.isDeleted !== true && item.isActive !== false && `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()));
   const total = state.cart.reduce((sum, item) => sum + item.product.sellingPrice * item.quantity, 0);
   const finalTotal = Math.max(0, total - state.discount);
   return `
@@ -1099,7 +1156,7 @@ function renderPos() {
 }
 
 function renderInventory() {
-  const rows = state.data.products.filter((item) => `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()));
+  const rows = state.data.products.filter((item) => item.isDeleted !== true && item.isActive !== false && `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()));
   return tableSection("inventorySearch", ["Produto", "Categoria", "Fornecedor", "Preco", "Estoque", ""], rows.map((item) => {
     const category = state.data.categories.find((cat) => Number(cat.id) === Number(item.categoryId));
     const supplier = state.data.suppliers.find((sup) => Number(sup.id) === Number(item.supplierId));
@@ -1113,7 +1170,7 @@ function renderInventory() {
         <td>${escapeHtml(supplier?.name || "-")}</td>
         <td>${money.format(item.sellingPrice || 0)}</td>
         <td><span class="badge ${low ? "warn" : "good"}">${stockLabel}</span></td>
-        <td><button class="icon-btn" data-edit-product="${item.id}" title="Editar">${icon("edit")}</button><button class="icon-btn" data-delete-product="${item.id}" title="Excluir">${icon("delete")}</button></td>
+        <td><button class="icon-btn" data-edit-product="${docKey(item)}" title="Editar">${icon("edit")}</button><button class="icon-btn" data-delete-product="${docKey(item)}" title="Excluir">${icon("delete")}</button></td>
       </tr>
     `;
   }).join(""));
@@ -1663,7 +1720,8 @@ function bindCrudButtons() {
 }
 
 function findById(items, id) {
-  return items.find((item) => Number(item.id) === Number(id));
+  return items.find((item) => String(item.docId ?? item.id) === String(id)
+    || (Number.isFinite(Number(item.id)) && Number.isFinite(Number(id)) && Number(item.id) === Number(id)));
 }
 
 function productTracksStock(product) {
@@ -1686,14 +1744,16 @@ async function removeDoc(collectionName, id) {
   }
   if (!(await openConfirmModal("Excluir Registro", "Tem certeza que deseja excluir este registro?", "Excluir"))) return;
   await runAction(
-    () => deleteDoc(tenantDocument(collectionName, id)),
-    "Registro excluido."
+    () => collectionName === collections.products
+      ? callFunction("softDeleteProduct", { companyId: tenantId(), productId: id, idempotencyKey: crypto.randomUUID() })
+      : deleteDoc(tenantDocument(collectionName, id)),
+    collectionName === collections.products ? "Produto desativado e preservado no histórico." : "Registro excluido."
   );
 }
 
 async function addCart(productId) {
   const product = findById(state.data.products, productId);
-  if (!product) return;
+  if (!product || product.isDeleted === true || product.isActive === false) return;
   const existing = state.cart.find((item) => Number(item.product.id) === Number(productId));
   if (existing) {
     if (productTracksStock(product) && existing.quantity + 1 > Number(product.stockQuantity || 0)) {
@@ -1810,6 +1870,7 @@ const actions = {
   "refresh-data": () => renderApp(),
   "export-inventory": () => exportInventoryCsv(),
   "export-backup": () => exportBackupJson(),
+  "load-more-history": () => loadMoreHistory(),
   "cancel-password": () => changeCancellationPassword(),
   "exit-company": () => exitCompany(),
   "clear-cash-history-filter": () => {
@@ -1821,6 +1882,25 @@ const actions = {
 };
 
 const adminActions = new Set(["product-new", "category-new", "supplier-new", "user-new", "stock-adjust", "export-inventory", "export-backup"]);
+
+async function loadMoreHistory() {
+  const orderFields = { sales: "timestamp", registers: "openingTimestamp", entries: "timestamp", exits: "timestamp", stockMovements: "timestamp" };
+  await runAction(async () => {
+    for (const [key, field] of Object.entries(orderFields)) {
+      const cursor = state.historyCursors[key];
+      if (!cursor) continue;
+      const snapshot = await getDocs(query(tenantCollection(collections[key]), orderBy(field, "desc"), startAfter(cursor), limit(200)));
+      const incoming = snapshot.docs
+        .filter((item) => !(key === "registers" && item.id === ACTIVE_REGISTER_DOCUMENT))
+        .map((item) => ({ ...item.data(), docId: item.id }));
+      const existing = new Map(state.data[key].map((item) => [docKey(item), item]));
+      incoming.forEach((item) => existing.set(docKey(item), item));
+      state.data[key] = [...existing.values()];
+      state.historyCursors[key] = snapshot.docs.at(-1) || null;
+    }
+    renderApp();
+  }, "Histórico adicional carregado.");
+}
 
 function openModal(title, body, onSubmit) {
   document.querySelector("#modalRoot").innerHTML = `
@@ -1834,8 +1914,15 @@ function openModal(title, body, onSubmit) {
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
   document.querySelector("#modalForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const formElement = event.currentTarget;
+    const submitButton = formElement.querySelector('button[type="submit"]');
+    if (formElement.dataset.submitting === "true") return;
+    formElement.dataset.submitting = "true";
+    submitButton.disabled = true;
+    const originalLabel = submitButton.innerHTML;
+    submitButton.textContent = "Processando...";
     try {
-      const afterSave = await onSubmit(new FormData(event.currentTarget));
+      const afterSave = await onSubmit(new FormData(formElement));
       state.firebaseError = "";
       closeModal();
       renderApp();
@@ -1848,6 +1935,9 @@ function openModal(title, body, onSubmit) {
         state.firebaseError = message;
       }
       toast(message);
+      formElement.dataset.submitting = "false";
+      submitButton.disabled = false;
+      submitButton.innerHTML = originalLabel;
     }
   });
 }
@@ -1929,7 +2019,7 @@ function select(name, label, options, value = "") {
 function openProductModal(product = null) {
   if (!isAdmin()) return toast("Acesso restrito ao administrador.");
   const isEditing = Boolean(product?.id);
-  const id = product?.id || nextId(state.data.products);
+  const id = product?.id || doc(tenantCollection(collections.products)).id;
   openModal(isEditing ? "Editar Produto" : "Novo Produto", `
     <div class="form-grid">
       ${input("name", "Nome", product?.name || "")}
@@ -1945,6 +2035,8 @@ function openProductModal(product = null) {
     </div>
   `, async (form) => {
     const hasStockControl = form.get("hasStockControl") !== "false";
+    const requestedStock = hasStockControl ? parseDecimal(form.get("stockQuantity")) : 0;
+    const currentStock = Number(product?.stockQuantity) || 0;
     const payload = {
       id,
       name: form.get("name"),
@@ -1955,11 +2047,22 @@ function openProductModal(product = null) {
       sellingPrice: parseDecimal(form.get("sellingPrice")),
       hasStockControl,
       tracksStock: hasStockControl,
-      stockQuantity: hasStockControl ? parseDecimal(form.get("stockQuantity")) : 0,
+      stockQuantity: product ? currentStock : 0,
       minStockThreshold: hasStockControl ? (parseDecimal(form.get("minStockThreshold")) || 5) : 0,
       unit: form.get("unit") || "UN",
     };
     await setDoc(tenantDocument(collections.products, id), tenantPayload(payload));
+    const stockDelta = requestedStock - currentStock;
+    if (hasStockControl && stockDelta !== 0) {
+      await callFunction("adjustStock", {
+        companyId: tenantId(),
+        productId: String(id),
+        type: stockDelta > 0 ? "ENTRY" : "EXIT",
+        quantity: Math.abs(stockDelta),
+        reason: product ? "Estoque alterado no cadastro" : "Estoque inicial",
+        idempotencyKey: crypto.randomUUID(),
+      });
+    }
     toast("Produto salvo.");
   });
   const stockControl = document.querySelector('#modalRoot [name="hasStockControl"]');
@@ -1979,7 +2082,7 @@ function openProductModal(product = null) {
 
 function openNameModal(title, collectionName, items, item = null) {
   if (!isAdmin()) return toast("Acesso restrito ao administrador.");
-  const id = item?.id || nextId(items);
+  const id = item?.id || doc(tenantCollection(collectionName)).id;
   openModal(item ? `Editar ${title}` : `Nova ${title}`, input("name", "Nome", item?.name || ""), async (form) => {
     await setDoc(tenantDocument(collectionName, id), tenantPayload({ id, name: form.get("name") }));
     toast(`${title} salva.`);
@@ -1988,7 +2091,7 @@ function openNameModal(title, collectionName, items, item = null) {
 
 function openSupplierModal(item = null) {
   if (!isAdmin()) return toast("Acesso restrito ao administrador.");
-  const id = item?.id || nextId(state.data.suppliers);
+  const id = item?.id || doc(tenantCollection(collections.suppliers)).id;
   openModal(item ? "Editar Fornecedor" : "Novo Fornecedor", `
     ${input("name", "Nome", item?.name || "")}
     ${input("contact", "Contato", item?.contact || "")}
@@ -2019,39 +2122,13 @@ function openUserModal(item = null) {
     if (!item && state.data.users.some((user) => String(user.usernameNormalized || user.username || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() === usernameNormalized)) {
       throw new Error("Este nome de usuário já existe nesta empresa.");
     }
-    let authEmail = item?.authEmail || "";
     const password = String(form.get("password") || "");
     if (!item && !isAllowedPassword(password)) throw new Error("Informe uma senha com pelo menos 6 caracteres, ou use a senha padrao admin.");
-    let userDocId = item ? docKey(item, id) : "";
     if (!item) {
-      const secondaryApp = initializeApp(firebaseConfig, `create-user-${Date.now()}`);
-      try {
-        for (let attempt = 0; attempt < 3 && !userDocId; attempt += 1) {
-          authEmail = `tenant-${(await sha256Hex(`${tenantId()}:${usernameNormalized}:${randomToken()}`)).slice(0, 40)}@users.goregister.app`;
-          try {
-            const credential = await createUserWithEmailAndPassword(getAuth(secondaryApp), authEmail, password);
-            userDocId = credential.user.uid;
-          } catch (error) {
-            if (error?.code !== "auth/email-already-in-use" || attempt === 2) throw error;
-          }
-        }
-      } finally {
-        await signOut(getAuth(secondaryApp)).catch(() => {});
-        await deleteApp(secondaryApp);
-      }
+      await callFunction("createCompanyUser", { companyId: tenantId(), username, password, role, isActive: form.get("isActive") === "true" });
+    } else {
+      await callFunction("updateCompanyUser", { companyId: tenantId(), uid: docKey(item, id), username, role, isActive: form.get("isActive") === "true" });
     }
-    await setDoc(tenantDocument(collections.users, userDocId), tenantPayload({
-      id,
-      username,
-      email: item?.email || null,
-      authEmail,
-      usernameNormalized,
-      role,
-      isActive: form.get("isActive") === "true",
-      createdAt: item?.createdAt || Date.now(),
-    }));
-    const aliasId = `${tenantId()}__${usernameNormalized}`;
-    await setDoc(doc(db, "login_aliases", aliasId), tenantPayload({ uid: userDocId, authEmail, username }));
     toast("Usuario salvo.");
   });
 }
@@ -2084,7 +2161,7 @@ async function toggleUser(userKey) {
   if (sameUser(user, state.user)) return toast("Voce nao pode inativar seu proprio usuario.");
   if (!canManageUser(user)) return toast("Apenas o administrador mestre pode alterar status de administradores.");
   await runAction(
-    () => updateDoc(tenantDocument(collections.users, docKey(user, userKey)), { isActive: user.isActive === false }),
+    () => callFunction("updateCompanyUser", { companyId: tenantId(), uid: docKey(user, userKey), username: user.username, role: user.role, isActive: user.isActive === false }),
     user.isActive === false ? "Usuario ativado." : "Usuario inativado."
   );
 }
@@ -2097,8 +2174,8 @@ async function deleteUser(userKey) {
   if (!canManageUser(user)) return toast("Apenas o administrador mestre pode excluir administradores.");
   if (!(await openConfirmModal("Excluir Usuario", `Tem certeza que deseja excluir ${user.username}?`, "Excluir"))) return;
   await runAction(
-    () => deleteDoc(tenantDocument(collections.users, docKey(user, userKey))),
-    "Registro excluido."
+    () => callFunction("disableCompanyUser", { companyId: tenantId(), uid: docKey(user, userKey) }),
+    "Usuario desativado para preservar o historico."
   );
 }
 
@@ -2118,7 +2195,7 @@ function getReportPeriod(period) {
     };
   }
   if (period === "specificDate") {
-    const selectedDate = state.filters.reportsDate || new Date().toISOString().slice(0, 10);
+    const selectedDate = state.filters.reportsDate || defaultLocalDateInput();
     const label = formatDateInputLabel(selectedDate) || "Data especifica";
     return {
       startTime: bounds[0],
@@ -2182,7 +2259,8 @@ function exportSalesReport(period) {
 }
 
 function csvCell(value) {
-  const text = String(value ?? "");
+  let text = String(value ?? "");
+  if (/^[\s]*[=+\-@\t\r]/.test(text)) text = `'${text}`;
   return `"${text.replace(/"/g, '""')}"`;
 }
 
@@ -2395,41 +2473,11 @@ function openRegisterModal() {
   }
 
   openModal("Abrir Caixa", input("initialBalance", "Saldo inicial", 0, "number"), async (form) => {
-    const existingBeforeTransaction = currentOpenRegister();
-    const controlReference = tenantDocument(collections.registers, ACTIVE_REGISTER_DOCUMENT);
-
-    const activeRegister = await runTransaction(db, async (transaction) => {
-      const controlSnapshot = await transaction.get(controlReference);
-      const currentControl = controlSnapshot.exists()
-        ? { ...controlSnapshot.data(), docId: controlSnapshot.id }
-        : null;
-
-      if (currentControl?.isOpen === true) return currentControl;
-
-      if (!controlSnapshot.exists() && existingBeforeTransaction?.isOpen === true) {
-        const normalizedExisting = tenantPayload(existingBeforeTransaction);
-        transaction.set(controlReference, normalizedExisting);
-        return existingBeforeTransaction;
-      }
-
-      const id = Date.now();
-      const register = {
-        id,
-        openingTimestamp: id,
-        closingTimestamp: null,
-        initialBalance: parseDecimal(form.get("initialBalance")),
-        closingBalance: null,
-        userId: Number(state.user.id) || 0,
-        isOpen: true,
-      };
-      const payload = tenantPayload(register);
-
-      transaction.set(tenantDocument(collections.registers, id), payload);
-      transaction.set(controlReference, payload);
-      return { ...register, empresa_id: tenantId(), companyId: tenantId(), docId: String(id) };
+    await callFunction("openCashRegister", {
+      companyId: tenantId(),
+      initialBalanceInCents: parseMoneyToCents(form.get("initialBalance")),
+      idempotencyKey: crypto.randomUUID(),
     });
-
-    await closeOlderOpenRegisters(activeRegister);
     toast("Caixa aberto.");
   });
 }
@@ -2447,44 +2495,13 @@ async function closeRegister() {
   );
   if (!form) return;
 
-  const closingBalance = parseDecimal(form.get("closingBalance"));
+  const closingBalanceInCents = parseMoneyToCents(form.get("closingBalance"));
   await runAction(async () => {
-    const controlReference = tenantDocument(collections.registers, ACTIVE_REGISTER_DOCUMENT);
-
-    await runTransaction(db, async (transaction) => {
-      const controlSnapshot = await transaction.get(controlReference);
-      let cloudActive = controlSnapshot.exists()
-        ? { ...controlSnapshot.data(), docId: controlSnapshot.id }
-        : null;
-
-      // Migração segura para caixas criados antes do documento de controle existir.
-      if (cloudActive?.isOpen !== true && !controlSnapshot.exists()) {
-        const legacyReference = tenantDocument(
-          collections.registers,
-          open.docId || tenantDocId(open.id)
-        );
-        const legacySnapshot = await transaction.get(legacyReference);
-        cloudActive = legacySnapshot.exists()
-          ? { ...legacySnapshot.data(), docId: legacySnapshot.id }
-          : null;
-      }
-
-      if (cloudActive?.isOpen !== true) {
-        throw new Error("Este caixa já foi fechado em outro dispositivo.");
-      }
-      if (Number(cloudActive.id) !== Number(open.id)) {
-        throw new Error("O caixa ativo mudou em outro dispositivo. Atualize a tela antes de fechar.");
-      }
-
-      const closed = tenantPayload({
-        ...cloudActive,
-        closingTimestamp: Date.now(),
-        closingBalance,
-        isOpen: false,
-      });
-
-      transaction.set(tenantDocument(collections.registers, cloudActive.id), closed);
-      transaction.set(controlReference, closed);
+    await callFunction("closeCashRegister", {
+      companyId: tenantId(),
+      cashRegisterId: String(open.registerDocumentId || open.docId || open.id),
+      closingBalanceInCents,
+      idempotencyKey: crypto.randomUUID(),
     });
   }, "Caixa fechado.");
 }
@@ -2497,22 +2514,19 @@ function openMovementModal(kind) {
     ${select("paymentMethod", "Pagamento", paymentOptions, "CASH")}
     ${input("category", "Categoria")}
   `, async (form) => {
-    const list = isEntry ? state.data.entries : state.data.exits;
-    const collectionName = isEntry ? collections.entries : collections.exits;
     const open = currentOpenRegister();
-    const id = nextId(list);
+    if (!open) throw new Error("Abra o caixa antes de registrar movimentos.");
     const description = String(form.get("description") || "").trim();
-    await setDoc(tenantDocument(collectionName, id), tenantPayload({
-      id,
-      timestamp: Date.now(),
+    await callFunction("createFinancialMovement", {
+      companyId: tenantId(),
+      kind: isEntry ? "ENTRY" : "EXIT",
       description,
-      amount: parseDecimal(form.get("amount")),
+      amountInCents: parseMoneyToCents(form.get("amount")),
       paymentMethod: form.get("paymentMethod"),
       category: form.get("category") || null,
-      transactionType: isEntry ? "MANUAL_SALE" : "EXIT",
-      cashRegisterId: Number(open?.id) || 0,
-      isCancelled: false,
-    }));
+      cashRegisterId: String(open.registerDocumentId || open.docId || open.id),
+      idempotencyKey: crypto.randomUUID(),
+    });
     toast(isEntry ? "Venda manual salva sem alterar o estoque." : "Saida salva.");
     return isEntry ? undefined : () => promptCreateProductFromManualMovement(description, "exit");
   });
@@ -2531,14 +2545,20 @@ function openStockAdjustModal(selectedProduct = null) {
   `, async (form) => {
     const product = findById(state.data.products, form.get("productId"));
     if (!product) throw new Error("Selecione um produto.");
-    const type = form.get("type");
+    let type = form.get("type");
     const rawQty = Math.max(0, parseDecimal(form.get("quantity")));
     const current = Number(product.stockQuantity) || 0;
-    const movementQty = type === "EXIT" ? -rawQty : type === "ADJUSTMENT" ? rawQty - current : rawQty;
-    const nextStock = type === "ADJUSTMENT" ? rawQty : current + movementQty;
-    if (nextStock < 0) throw new Error("Estoque nao pode ficar negativo.");
-    await updateProductStock(product.id, nextStock);
-    await saveStockMovement(product.id, movementQty, type, form.get("reason") || "Ajuste manual");
+    if (type === "ADJUSTMENT") type = rawQty >= current ? "ENTRY" : "EXIT";
+    const quantity = form.get("type") === "ADJUSTMENT" ? Math.abs(rawQty - current) : rawQty;
+    if (!quantity) return;
+    await callFunction("adjustStock", {
+      companyId: tenantId(),
+      productId: docKey(product, product.id),
+      type,
+      quantity,
+      reason: form.get("reason") || "Ajuste manual",
+      idempotencyKey: crypto.randomUUID(),
+    });
   });
 }
 
@@ -2663,82 +2683,49 @@ function openReceiptModal(sale, items) {
 }
 
 async function cancelTransaction(kind, id) {
-  if (!(await requestCancellationAuthorization())) return;
+  const password = await requestCancellationAuthorization();
+  if (!password) return;
   await runAction(async () => {
     if (kind === "sale") {
       const record = state.data.sales.find((item) => String(docKey(item, saleData(item).id)) === String(id) || String(saleData(item).id ?? "") === String(id));
       if (!record) throw new Error("Venda nao encontrada.");
-      const saleId = saleData(record).id ?? id;
-      await updateDoc(tenantDocument(collections.sales, docKey(record, id)), { "sale.isCancelled": true, isCancelled: true });
-      await Promise.all(saleItems(record).map(async (item) => {
-        if (item.tracksStock === false) return;
-        const productId = item.productId ?? item.product_id;
-        const product = findById(state.data.products, productId);
-        if (!product) return;
-        const restored = (Number(product.stockQuantity) || 0) + (Number(item.quantity) || 0);
-        await updateProductStock(product.id, restored);
-        await saveStockMovement(product.id, Number(item.quantity) || 0, "ENTRY", `Cancelamento venda #${saleId}`);
-      }));
-    }
-    if (kind === "entry") {
-      const record = state.data.entries.find((item) => String(docKey(item, item.id)) === String(id) || String(item.id ?? "") === String(id));
-      if (!record) throw new Error("Entrada nao encontrada.");
-      await updateDoc(tenantDocument(collections.entries, docKey(record, id)), { isCancelled: true });
-    }
-    if (kind === "exit") {
-      const record = state.data.exits.find((item) => String(docKey(item, item.id)) === String(id) || String(item.id ?? "") === String(id));
-      if (!record) throw new Error("Saida nao encontrada.");
-      await updateDoc(tenantDocument(collections.exits, docKey(record, id)), { isCancelled: true });
+      await callFunction("cancelSale", {
+        companyId: tenantId(),
+        saleId: docKey(record, id),
+        password,
+        reason: "Cancelamento pelo PDV",
+        idempotencyKey: crypto.randomUUID(),
+      });
+    } else {
+      throw new Error("Este tipo de cancelamento deve ser feito pelo backend financeiro.");
     }
   }, "Transacao cancelada.");
 }
 
+let checkoutInProgress = false;
 async function checkout(paymentMethod) {
   const open = currentOpenRegister();
-  if (!open || !state.cart.length) return;
-  const id = nextId(state.data.sales.map((item) => saleData(item)));
-  const total = state.cart.reduce((sum, item) => sum + item.product.sellingPrice * item.quantity, 0);
-  const discount = Math.min(Math.max(0, parseDecimal(state.discount)), total);
-  const sale = {
-    id,
-    timestamp: Date.now(),
-    totalAmount: total,
-    discount,
-    finalAmount: total - discount,
-    paymentMethod,
-    userId: Number(state.user.id) || 0,
-    cashRegisterId: Number(open.id) || 0,
-    isCancelled: false,
-  };
-  const receiptItems = state.cart.map((item) => ({
-    productName: String(item.product.name || "Produto"),
-    quantity: Number(item.quantity) || 0,
-    unitPrice: Number(item.product.sellingPrice) || 0,
-    subtotal: (Number(item.product.sellingPrice) || 0) * (Number(item.quantity) || 0),
-  }));
-  const items = state.cart.map((item, index) => ({
-    id: id * 1000 + index + 1,
-    saleId: id,
-    productId: Number(item.product.id),
-    productName: String(item.product.name || "Produto"),
-    quantity: item.quantity,
-    tracksStock: productTracksStock(item.product),
-    unitPrice: Number(item.product.sellingPrice) || 0,
-    subtotal: (Number(item.product.sellingPrice) || 0) * item.quantity,
-  }));
-  await setDoc(tenantDocument(collections.sales, id), tenantPayload({ sale: { ...sale, empresa_id: tenantId() }, items }));
-  await Promise.all(state.cart.filter((item) => productTracksStock(item.product)).map((item) => {
-    const updatedStock = Math.max(0, (Number(item.product.stockQuantity) || 0) - item.quantity);
-    return Promise.all([
-      updateProductStock(item.product.id, updatedStock),
-      saveStockMovement(item.product.id, -item.quantity, "EXIT", `Venda #${id}`),
-    ]);
-  }));
-  state.cart = [];
-  state.discount = 0;
-  toast("Venda finalizada.");
-  renderApp();
-  return () => openReceiptModal(sale, receiptItems);
+  if (!open || !state.cart.length || checkoutInProgress) return;
+  checkoutInProgress = true;
+  try {
+    const result = await callFunction("finalizeSale", {
+      companyId: tenantId(),
+      cashRegisterId: String(open.registerDocumentId || open.docId || open.id),
+      paymentMethod: normalizePaymentMethod(paymentMethod),
+      discountInCents: parseMoneyToCents(state.discount),
+      items: state.cart.map((item) => ({ productId: docKey(item.product, item.product.id), quantity: Number(item.quantity) })),
+      idempotencyKey: crypto.randomUUID(),
+    });
+    const sale = { id: result.saleNumber, docId: result.saleId, timestamp: Date.now(), paymentMethod: result.paymentMethod, discount: result.discountInCents / 100, finalAmount: result.totalAmountInCents / 100 };
+    const receiptItems = result.items.map((item) => ({ ...item, unitPrice: item.unitPriceInCents / 100, subtotal: item.subtotalInCents / 100 }));
+    state.cart = [];
+    state.discount = 0;
+    toast("Venda finalizada.");
+    renderApp();
+    return () => openReceiptModal(sale, receiptItems);
+  } finally {
+    checkoutInProgress = false;
+  }
 }
 
 async function updateProductStock(productId, stockQuantity) {
