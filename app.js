@@ -2513,8 +2513,8 @@ function openMovementModal(kind) {
       cashRegisterId: Number(open?.id) || 0,
       isCancelled: false,
     }));
-    toast(isEntry ? "Venda manual salva sem alterar o estoque." : "Saida salva.");
-    return isEntry ? undefined : () => promptCreateProductFromManualMovement(description, "exit");
+    toast(isEntry ? "Venda manual salva." : "Saida salva.");
+    return () => promptCreateProductFromManualMovement(description, isEntry ? "entry" : "exit");
   });
 }
 
