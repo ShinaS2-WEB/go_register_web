@@ -161,6 +161,13 @@ function stockTypeLabel(type) {
   return stockTypeLabels[type] || type || "-";
 }
 
+function publicStockMovementReason(value) {
+  return String(value || "")
+    .replace(/\bCancelamento\s+(?:de\s+)?venda\s*#[^\s]+/gi, "Cancelamento de venda")
+    .replace(/\bVenda\s*#[^\s]+/gi, "Venda")
+    .trim();
+}
+
 function saleData(record) {
   return record?.sale && typeof record.sale === "object" ? { ...record, ...record.sale } : record || {};
 }
@@ -713,7 +720,7 @@ function renderCompanyLogin(error = "") {
         <p class="muted login-subtitle">Selecione sua empresa para continuar</p>
         <label class="field">
           <span>Empresa</span>
-          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Código, CNPJ ou acesso" required /></span>
+          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Identificador de acesso" required /></span>
         </label>
         <p class="error">${escapeHtml(error)}</p>
         <button class="btn full" type="submit">Continuar</button>
@@ -727,8 +734,9 @@ function renderCompanyLogin(error = "") {
     const form = new FormData(event.currentTarget);
     try {
       const identifierInput = String(form.get("identifier") || "").trim();
-      const identifierDigits = identifierInput.replace(/\D/g, "");
-      const identifier = identifierDigits || identifierInput.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const identifier = /^[\d\s./-]+$/.test(identifierInput)
+        ? identifierInput.replace(/\D/g, "")
+        : identifierInput.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       const snapshot = await getDocs(query(collection(db, "companies"), where("identifierNormalized", "==", identifier), where("isActive", "==", true), limit(1)));
       if (snapshot.empty) throw new Error("Empresa não encontrada ou desativada.");
       const companyDoc = snapshot.docs[0];
@@ -989,7 +997,7 @@ function allTransactions() {
       id: saleId,
       kind: "sale",
       title: saleTransactionTitle(item),
-      subtitle: `${salePaymentSummary(item)} - Venda #${saleId ?? "-"}`,
+      subtitle: salePaymentSummary(item),
       amount: saleAmount(item),
       timestamp: saleTimestamp(item),
       isCancelled: saleIsCancelled(item),
@@ -1025,7 +1033,7 @@ function allTransactions() {
 function saleTransactionTitle(record) {
   const products = saleProductNames(record);
   if (products && products !== "N/A") return products;
-  return `Venda #${saleData(record).id ?? record?.docId ?? "-"}`;
+  return "Venda";
 }
 
 function renderDashboard() {
@@ -1208,7 +1216,7 @@ function renderStockHistory() {
         <td><strong>${escapeHtml(product?.name || `Produto #${item.productId}`)}</strong></td>
         <td><span class="badge ${item.type === "EXIT" ? "bad" : item.type === "ADJUSTMENT" ? "warn" : "good"}">${escapeHtml(stockTypeLabel(item.type))}</span></td>
         <td><strong class="amount ${qty < 0 ? "minus" : "plus"}">${qty > 0 ? "+" : ""}${qty}</strong></td>
-        <td>${escapeHtml(item.reason || "-")}</td>
+        <td>${escapeHtml(publicStockMovementReason(item.reason) || "-")}</td>
       </tr>
     `;
   }).join(""));
@@ -1252,7 +1260,7 @@ function renderCash() {
         </article>
       </div>
       <div class="panel">
-        <div class="toolbar"><h2>Movimentos Financeiros</h2><div><button class="btn secondary" data-action="entry-new">${icon("add")} Venda manual</button> <button class="btn secondary" data-action="exit-new">${icon("remove")} Saida</button></div></div>
+        <div class="toolbar"><h2>Movimentos Financeiros</h2><div><button class="btn secondary" data-action="entry-new" ${open ? "" : 'disabled title="Abra o caixa para fazer uma venda"'}>${icon("add")} Venda manual</button> <button class="btn secondary" data-action="exit-new" ${open ? "" : 'disabled title="Abra o caixa para registrar uma saída"'}>${icon("remove")} Saida</button></div></div>
         <div class="transactions transactions-scroll transactions-scroll--cash">${renderGroupedTransactionRows(allTransactions()) || `<p class="muted">Sem movimentos.</p>`}</div>
       </div>
     </section>
@@ -1500,7 +1508,7 @@ function reportManualStockEntries(bounds) {
       const reason = String(item.reason || "");
       return item.type === "ENTRY"
         && Number(item.quantity) > 0
-        && !/^Cancelamento venda/i.test(reason)
+        && !/^Cancelamento\s+(?:de\s+)?venda/i.test(reason)
         && inBounds(Number(item.timestamp) || 0, bounds);
     })
     .map((item) => {
@@ -1511,7 +1519,7 @@ function reportManualStockEntries(bounds) {
         productName: product?.name || `Produto #${item.productId ?? "-"}`,
         quantity: Number(item.quantity) || 0,
         unit: product?.unit || "UN",
-        reason: item.reason || "Entrada manual",
+        reason: publicStockMovementReason(item.reason) || "Entrada manual",
       };
     })
     .sort((a, b) => a.timestamp - b.timestamp);
@@ -1965,8 +1973,14 @@ const actions = {
   "stock-adjust": () => openStockAdjustModal(),
   "open-register": () => openRegisterModal(),
   "close-register": () => closeRegister(),
-  "entry-new": () => openMovementModal("entry"),
-  "exit-new": () => openMovementModal("exit"),
+  "entry-new": () => {
+    if (!currentOpenRegister()) return toast("Abra o caixa antes de fazer uma venda.");
+    openMovementModal("entry");
+  },
+  "exit-new": () => {
+    if (!currentOpenRegister()) return toast("Abra o caixa antes de registrar uma saída.");
+    openMovementModal("exit");
+  },
   "cart-clear": () => clearCart(),
   "toggle-sidebar": () => {
     state.sidebarCollapsed = !state.sidebarCollapsed;
@@ -2360,6 +2374,8 @@ async function exportSalesReport(period) {
       name: rootCompany.name,
       identifier: rootCompany.identifier,
       identifierNormalized: rootCompany.identifierNormalized,
+      taxIdentifier: rootCompany.taxIdentifier,
+      taxIdentifierNormalized: rootCompany.taxIdentifierNormalized,
       address: rootCompany.address,
       phone: rootCompany.phone,
     }
@@ -2511,6 +2527,14 @@ function companyDocumentLabel(value) {
   return "CPF/CNPJ/Identificador";
 }
 
+function companyTaxIdentifier(company) {
+  const explicit = companyFieldValue(company, ["taxIdentifier", "taxIdentifierNormalized", "cnpj", "cpf", "taxId", "document"]);
+  if (explicit) return explicit;
+  const legacy = companyFieldValue(company, ["identifier", "identifierNormalized"]);
+  const digits = legacy.replace(/\D/g, "");
+  return [11, 14].includes(digits.length) ? legacy : "";
+}
+
 function formatCompanyDate(value) {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -2541,9 +2565,12 @@ function companyReportFields(company) {
   add("Nome fantasia", ["tradeName", "fantasyName", "nomeFantasia", "nome_fantasia"]);
   add("Unidade/Filial", ["unitName", "branchName", "storeName", "nomeUnidade", "nome_unidade", "filial"]);
 
-  const identifier = companyFieldValue(company, ["identifier", "cnpj", "cpf", "taxId", "document", "identifierNormalized"]);
+  const identifier = companyTaxIdentifier(company);
   if (identifier) {
-    add(companyDocumentLabel(identifier), ["identifier", "cnpj", "cpf", "taxId", "document", "identifierNormalized"], formatCompanyIdentifier);
+    const keys = companyFieldValue(company, ["taxIdentifier", "taxIdentifierNormalized", "cnpj", "cpf", "taxId", "document"])
+      ? ["taxIdentifier", "taxIdentifierNormalized", "cnpj", "cpf", "taxId", "document"]
+      : ["identifier", "identifierNormalized"];
+    add(companyDocumentLabel(identifier), keys, formatCompanyIdentifier);
   }
 
   add("Inscrição estadual", ["stateRegistration", "inscricaoEstadual", "inscricao_estadual"]);
@@ -2585,7 +2612,7 @@ function createSalesReportPdf(title, generatedAt, rows, paymentTotals, company =
   const totalText = money.format(paymentTotals.total);
   const companyFields = companyReportFields(company);
   const companyName = companyFieldValue(company, ["name", "nome", "companyName"]) || "Empresa não informada";
-  const companyIdentifier = companyFieldValue(company, ["identifier", "cnpj", "cpf", "taxId", "document", "identifierNormalized"]);
+  const companyIdentifier = companyTaxIdentifier(company);
   const compactCompany = companyIdentifier
     ? `${companyName} - ${companyDocumentLabel(companyIdentifier)}: ${formatCompanyIdentifier(companyIdentifier)}`
     : companyName;
@@ -2878,7 +2905,11 @@ async function closeRegister() {
 
 function openMovementModal(kind) {
   const isEntry = kind === "entry";
-  openModal(isEntry ? "Nova Venda Manual (sem retirar do estoque)" : "Nova Saida", `
+  if (!currentOpenRegister()) {
+    toast(isEntry ? "Abra o caixa antes de fazer uma venda." : "Abra o caixa antes de registrar uma saída.");
+    return;
+  }
+  openModal(isEntry ? "Nova Venda Manual" : "Nova Saida", `
     ${input("description", "Descricao")}
     ${input("amount", "Valor", 0, "number")}
     ${select("paymentMethod", "Pagamento", paymentOptions, "CASH")}
@@ -2887,6 +2918,9 @@ function openMovementModal(kind) {
     const list = isEntry ? state.data.entries : state.data.exits;
     const collectionName = isEntry ? collections.entries : collections.exits;
     const open = currentOpenRegister();
+    if (!open) throw new Error(isEntry
+      ? "O caixa foi fechado. Abra o caixa antes de fazer uma venda."
+      : "O caixa foi fechado. Abra o caixa antes de registrar uma saída.");
     const id = nextId(list);
     const description = String(form.get("description") || "").trim();
     await setDoc(tenantDocument(collectionName, id), tenantPayload({
@@ -2897,10 +2931,10 @@ function openMovementModal(kind) {
       paymentMethod: form.get("paymentMethod"),
       category: form.get("category") || null,
       transactionType: isEntry ? "MANUAL_SALE" : "EXIT",
-      cashRegisterId: Number(open?.id) || 0,
+      cashRegisterId: Number(open.id) || 0,
       isCancelled: false,
     }));
-    toast(isEntry ? "Venda manual salva sem alterar o estoque." : "Saida salva.");
+    toast(isEntry ? "Venda manual salva." : "Saida salva.");
     return isEntry ? undefined : () => promptCreateProductFromManualMovement(description, "exit");
   });
 }
@@ -3141,7 +3175,7 @@ function buildSaleReceiptText(result) {
   const { sale, receiptItems, payments } = result;
   const company = state.company || {};
   const { socialMedia = "", receiptMessage = "", exchangePolicy = "" } = state.receiptSettings || {};
-  const identifier = formatCompanyIdentifier(company.identifier || company.identifierNormalized);
+  const identifier = formatCompanyIdentifier(companyTaxIdentifier(company));
   const lines = [
     company.name || "GO REGISTER",
     identifier ? `CPF/CNPJ: ${identifier}` : "",
@@ -3150,7 +3184,6 @@ function buildSaleReceiptText(result) {
     socialMedia ? `Redes sociais: ${socialMedia}` : "",
     "",
     "COMPROVANTE DE VENDA",
-    `Venda #${sale.id}`,
     dateTime.format(new Date(sale.timestamp)),
     "",
     ...receiptItems.map((item) => `${formatReceiptQuantity(item.quantity)}x ${item.name} - ${money.format(item.subtotalCents / 100)}`),
@@ -3169,7 +3202,7 @@ async function shareSaleReceipt(result) {
   const text = buildSaleReceiptText(result);
   try {
     if (navigator.share) {
-      await navigator.share({ title: `Comprovante da venda #${result.sale.id}`, text });
+      await navigator.share({ title: "Comprovante de venda", text });
       return;
     }
     if (navigator.clipboard?.writeText) {
@@ -3187,7 +3220,7 @@ function openSaleReceipt(result) {
   const { sale, receiptItems, payments } = result;
   const company = state.company || {};
   const { socialMedia = "", receiptMessage = "", exchangePolicy = "" } = state.receiptSettings || {};
-  const identifier = formatCompanyIdentifier(company.identifier || company.identifierNormalized);
+  const identifier = formatCompanyIdentifier(companyTaxIdentifier(company));
   const modalRoot = document.querySelector("#modalRoot");
   modalRoot.innerHTML = `
     <div class="modal-backdrop">
@@ -3204,7 +3237,7 @@ function openSaleReceipt(result) {
             ${company.phone ? `<span>Telefone: ${escapeHtml(company.phone)}</span>` : ""}
             ${socialMedia ? `<span>Redes sociais: ${escapeHtml(socialMedia)}</span>` : ""}
           </div>
-          <div class="receipt-meta"><span>Venda #${escapeHtml(sale.id)}</span><span>${escapeHtml(dateTime.format(new Date(sale.timestamp)))}</span></div>
+          <div class="receipt-meta"><span>${escapeHtml(dateTime.format(new Date(sale.timestamp)))}</span></div>
           <div class="receipt-items">
             ${receiptItems.map((item) => `
               <div class="receipt-item">
@@ -3260,7 +3293,6 @@ async function cancelTransaction(kind, id) {
     if (kind === "sale") {
       const record = state.data.sales.find((item) => String(docKey(item, saleData(item).id)) === String(id) || String(saleData(item).id ?? "") === String(id));
       if (!record) throw new Error("Venda nao encontrada.");
-      const saleId = saleData(record).id ?? id;
       await updateDoc(tenantDocument(collections.sales, docKey(record, id)), { "sale.isCancelled": true, isCancelled: true });
       await Promise.all(saleItems(record).map(async (item) => {
         if (item.tracksStock === false) return;
@@ -3269,7 +3301,7 @@ async function cancelTransaction(kind, id) {
         if (!product) return;
         const restored = (Number(product.stockQuantity) || 0) + (Number(item.quantity) || 0);
         await updateProductStock(product.id, restored);
-        await saveStockMovement(product.id, Number(item.quantity) || 0, "ENTRY", `Cancelamento venda #${saleId}`);
+        await saveStockMovement(product.id, Number(item.quantity) || 0, "ENTRY", "Cancelamento de venda");
       }));
     }
     if (kind === "entry") {
@@ -3335,7 +3367,7 @@ async function checkout(paymentParts) {
       const updatedStock = Math.max(0, (Number(item.product.stockQuantity) || 0) - item.quantity);
       return Promise.all([
         updateProductStock(item.product.id, updatedStock),
-        saveStockMovement(item.product.id, -item.quantity, "EXIT", `Venda #${id}`),
+        saveStockMovement(item.product.id, -item.quantity, "EXIT", "Venda"),
       ]);
     }));
 

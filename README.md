@@ -28,7 +28,7 @@ O projeto funciona direto no navegador e usa Firebase/Firestore para sincronizar
 
 ## Arquitetura multiempresa
 
-O acesso ocorre em duas etapas: primeiro o usuário seleciona a empresa pelo identificador e depois entra com e-mail e senha. O perfil `users/{uid}` define o `empresa_id`; as regras em `firestore.rules` usam esse vínculo em todas as leituras e gravações. O frontend nunca pode escolher outro `empresa_id`.
+O acesso ocorre em duas etapas: primeiro o usuário seleciona a empresa pelo identificador de acesso e depois entra com nome de usuário e senha. O identificador de acesso (`identifier`) é independente do CPF/CNPJ (`taxIdentifier`). O perfil `users/{uid}` define o `empresa_id`; as regras em `firestore.rules` usam esse vínculo em todas as leituras e gravações. O frontend nunca pode escolher outro `empresa_id`.
 
 O painel separado de empresas fica em `/admin/` e exige uma conta do Firebase Authentication registrada em `platform_admins/{uid}`. Empresas inativas são bloqueadas pelas regras do Firestore.
 
