@@ -38,10 +38,11 @@ da plataforma pode editá-los. Administradores da empresa podem consultá-los no
 site principal apenas para gerar relatórios; operadores não recebem esse perfil
 e ele não é salvo no cache do navegador.
 
-Mensagem do recibo, política de troca e redes sociais ficam separadas em
+URL do logotipo, mensagem do recibo, política de troca e redes sociais ficam separadas em
 `companies/{companyId}/receipt_settings/official`. Todos os usuários ativos da
 empresa podem ler somente essas configurações para emitir comprovantes, mas a
-edição continua exclusiva do painel administrativo da plataforma.
+edição continua exclusiva do painel administrativo da plataforma. Por ser um
+recurso público, a URL do logotipo também é espelhada no documento da empresa.
 
 ### Publicação obrigatória das regras
 

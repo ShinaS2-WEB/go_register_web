@@ -825,8 +825,20 @@ function receiptSettingValue(settings, keys, maxLength, preserveLines = false) {
   return `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
+function safeReceiptLogoUrl(settings) {
+  const value = receiptSettingValue(settings, ["logoUrl", "logoURL", "logo_url"], 500);
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.hostname.includes(".") ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
 function safeReceiptSettings(settings) {
   return {
+    logoUrl: safeReceiptLogoUrl(settings),
     socialMedia: receiptSettingValue(settings, ["socialMedia", "socialNetworks", "socialNetwork", "redesSociais", "redes_sociais"], 240),
     receiptMessage: receiptSettingValue(settings, ["receiptMessage", "customReceiptMessage", "mensagemRecibo", "mensagem_recibo"], 500, true),
     exchangePolicy: receiptSettingValue(settings, ["exchangePolicy", "returnPolicy", "refundPolicy", "politicaTroca", "politica_troca", "politicaDeTroca"], 1200, true),
@@ -2992,7 +3004,7 @@ async function openCheckoutModal() {
   const { finalCents } = cartTotals();
   try {
     const result = await checkout([{ method: primaryMethod, amountCents: finalCents }]);
-    showCompletedCheckout(result);
+    await showCompletedCheckout(result);
   } catch (error) {
     handleCheckoutError(error);
   }
@@ -3137,7 +3149,7 @@ function openSplitPaymentModal(primaryMethod) {
         { method: values.firstPaymentMethod, amountCents: values.firstCents },
         { method: values.secondPaymentMethod, amountCents: values.secondCents },
       ]);
-      showCompletedCheckout(result);
+      await showCompletedCheckout(result);
     } catch (error) {
       handleCheckoutError(error, false);
       submitting = false;
@@ -3216,10 +3228,40 @@ async function shareSaleReceipt(result) {
   }
 }
 
+async function waitForReceiptLogo() {
+  const logo = document.querySelector("#saleReceipt .receipt-logo");
+  if (!logo || logo.complete) return;
+  await new Promise((resolve) => {
+    const timeoutId = window.setTimeout(resolve, 5000);
+    const finish = () => {
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    logo.addEventListener("load", finish, { once: true });
+    logo.addEventListener("error", finish, { once: true });
+  });
+}
+
+async function printSaleReceipt() {
+  await waitForReceiptLogo();
+  const finishPrinting = () => document.body.classList.remove("receipt-printing");
+  document.body.classList.add("receipt-printing");
+  window.addEventListener("afterprint", finishPrinting, { once: true });
+  window.print();
+  window.setTimeout(finishPrinting, 1000);
+}
+
 function openSaleReceipt(result) {
   const { sale, receiptItems, payments } = result;
   const company = state.company || {};
   const { socialMedia = "", receiptMessage = "", exchangePolicy = "" } = state.receiptSettings || {};
+  const logoUrl = safeReceiptLogoUrl({
+    logoUrl: state.receiptSettings?.logoUrl
+      || state.companyProfile?.logoUrl
+      || company.logoUrl
+      || company.logoURL
+      || company.logo_url,
+  });
   const identifier = formatCompanyIdentifier(companyTaxIdentifier(company));
   const modalRoot = document.querySelector("#modalRoot");
   modalRoot.innerHTML = `
@@ -3229,8 +3271,9 @@ function openSaleReceipt(result) {
           <div><span class="receipt-success">${icon("check_circle")} VENDA FINALIZADA!</span><h2 id="saleReceiptTitle">Comprovante de Venda</h2></div>
           <button class="icon-btn" type="button" data-close-receipt aria-label="Fechar">${icon("close")}</button>
         </header>
-        <div class="receipt-paper">
+        <div class="receipt-paper" id="saleReceipt">
           <div class="receipt-company">
+            ${logoUrl ? `<img class="receipt-logo" src="${escapeHtml(logoUrl)}" alt="Logo de ${escapeHtml(company.name || "empresa")}" referrerpolicy="no-referrer" decoding="sync" fetchpriority="high">` : ""}
             <strong>${escapeHtml(company.name || "GO REGISTER")}</strong>
             ${identifier ? `<span>CPF/CNPJ: ${escapeHtml(identifier)}</span>` : ""}
             ${company.address ? `<span>${escapeHtml(company.address)}</span>` : ""}
@@ -3260,6 +3303,7 @@ function openSaleReceipt(result) {
           ` : ""}
         </div>
         <footer class="receipt-actions">
+          <button class="btn secondary" type="button" data-print-receipt>${icon("print")} Imprimir</button>
           <button class="btn secondary" type="button" data-share-receipt>${icon("share")} Compartilhar</button>
           <button class="btn" type="button" data-close-receipt>Fechar</button>
         </footer>
@@ -3271,6 +3315,13 @@ function openSaleReceipt(result) {
     renderApp();
   };
   modalRoot.querySelectorAll("[data-close-receipt]").forEach((button) => button.addEventListener("click", closeReceipt));
+  const receiptLogo = modalRoot.querySelector(".receipt-logo");
+  if (receiptLogo?.complete && !receiptLogo.naturalWidth) receiptLogo.remove();
+  else receiptLogo?.addEventListener("error", (event) => {
+    console.warn("Não foi possível carregar o logotipo configurado para o recibo.", event.currentTarget.src);
+    event.currentTarget.remove();
+  }, { once: true });
+  modalRoot.querySelector("[data-print-receipt]").addEventListener("click", printSaleReceipt);
   modalRoot.querySelector("[data-share-receipt]").addEventListener("click", () => shareSaleReceipt(result));
 }
 
@@ -3280,8 +3331,9 @@ function handleCheckoutError(error, showToast = true) {
   if (showToast) toast(message);
 }
 
-function showCompletedCheckout(result) {
+async function showCompletedCheckout(result) {
   state.firebaseError = "";
+  await loadReceiptSettings();
   renderApp();
   openSaleReceipt(result);
   toast("Venda finalizada.");

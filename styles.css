@@ -1609,6 +1609,16 @@ body.dark .transaction-row .amount.minus {
   font-size: 18px;
 }
 
+.receipt-logo {
+  display: block;
+  width: auto;
+  max-width: min(180px, 70%);
+  height: auto;
+  max-height: 72px;
+  margin: 0 auto 6px;
+  object-fit: contain;
+}
+
 .receipt-company span,
 .receipt-meta,
 .receipt-item small {
@@ -1658,6 +1668,46 @@ body.dark .transaction-row .amount.minus {
 .receipt-total strong {
   color: var(--success);
   font-size: 22px;
+}
+
+@media print {
+  @page {
+    margin: 0;
+  }
+
+  body.receipt-printing * {
+    visibility: hidden !important;
+  }
+
+  body.receipt-printing #saleReceipt,
+  body.receipt-printing #saleReceipt * {
+    visibility: visible !important;
+  }
+
+  body.receipt-printing #saleReceipt {
+    position: fixed;
+    inset: 0 auto auto 0;
+    width: 80mm;
+    max-width: none;
+    margin: 0;
+    padding: 5mm;
+    box-sizing: border-box;
+    color: #000 !important;
+    background: #fff !important;
+    border: 0.5mm solid #aaa;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  body.receipt-printing #saleReceipt * {
+    color: #000 !important;
+    border-color: #777 !important;
+  }
+
+  body.receipt-printing #saleReceipt .receipt-logo {
+    max-width: 48mm;
+    max-height: 22mm;
+  }
 }
 
 .toast {
