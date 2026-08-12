@@ -4,26 +4,13 @@
     "ignore": [
       "firebase.json",
       "**/.*",
-      ".git/**",
-      ".github/**",
-      ".agents/**",
-      ".codex/**",
-      ".firebase/**",
-      ".firebaserc",
-      ".gitignore",
-      ".README_INTERNO.md",
       "**/node_modules/**",
       "scripts/**",
       "tests/**",
       "functions/**",
       "mobile/**",
-      "arquivos_para_analise/**",
       "arquivos_codex/**",
-      "*-debug.log",
       "**/*firebase-adminsdk*.json",
-      "README.md",
-      "firestore.rules",
-      "firestore.indexes.json",
       "package.json",
       "package-lock.json"
     ],
@@ -45,23 +32,5 @@
   },
   "functions": {
     "source": "functions"
-  },
-  "emulators": {
-    "singleProjectMode": false,
-    "auth": {
-      "host": "127.0.0.1",
-      "port": 9099
-    },
-    "firestore": {
-      "host": "127.0.0.1",
-      "port": 8080
-    },
-    "functions": {
-      "host": "127.0.0.1",
-      "port": 5001
-    },
-    "ui": {
-      "enabled": false
-    }
   }
 }

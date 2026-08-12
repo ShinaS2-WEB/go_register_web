@@ -1,10 +1,10 @@
 mobile
 .agents
 .codex
-links.md
+.README_INTERNO.md
 node_modules
 .firebase
 firebase-debug.log
 firestore-debug.log
 goregister-*-firebase-adminsdk-*.json
-arquivos_para_analise
+arquivos_codex

@@ -32,41 +32,40 @@ O acesso ocorre em duas etapas: primeiro o usuário seleciona a empresa pelo ide
 
 O painel separado de empresas fica em `/admin/` e exige uma conta do Firebase Authentication registrada em `platform_admins/{uid}`. Empresas inativas são bloqueadas pelas regras do Firestore.
 
-Para autorizar uma conta administrativa já criada no Firebase Authentication, configure `GOOGLE_APPLICATION_CREDENTIALS` e execute `npm run admin:grant -- admin@exemplo.com`.
+Os dados empresariais complementares são gravados no perfil privado
+`companies/{companyId}/company_profile/official`. Somente o painel administrativo
+da plataforma pode editá-los. Administradores da empresa podem consultá-los no
+site principal apenas para gerar relatórios; operadores não recebem esse perfil
+e ele não é salvo no cache do navegador.
+
+Mensagem do recibo, política de troca e redes sociais ficam separadas em
+`companies/{companyId}/receipt_settings/official`. Todos os usuários ativos da
+empresa podem ler somente essas configurações para emitir comprovantes, mas a
+edição continua exclusiva do painel administrativo da plataforma.
+
+### Publicação obrigatória das regras
+
+Antes de publicar uma versão do site que use o perfil empresarial privado,
+publique também o arquivo `firestore.rules`:
+
+```powershell
+firebase deploy --only firestore:rules
+```
+
+O GitHub Pages publica apenas HTML, CSS, JavaScript e imagens. Ele não publica as
+regras do Firestore automaticamente. Sem essa etapa, o cadastro complementar e
+os relatórios com os novos dados serão bloqueados pelo Firebase.
 
 ## Primeiros Passos
 
 Cadastre a empresa pelo painel administrativo e crie o primeiro usuário por processo administrativo/migração. Depois disso, administradores da empresa criam novos usuários em Ajustes. O antigo cadastro público do primeiro administrador foi removido.
 
-Instale as dependências com `npm install`. Use `npm run test:rules` para validar o isolamento no emulador e `firebase deploy --only firestore,hosting` para publicar regras e hospedagem. Esta arquitetura funciona no plano Spark e não usa Cloud Functions.
+O site não exige instalação de dependências para funcionar no navegador. Para
+publicar com Firebase CLI, autentique-se no projeto correto e use
+`firebase deploy --only firestore:rules,hosting`. O diretório `functions/` possui
+dependências próprias e só precisa de `npm install` dentro dele quando as Cloud
+Functions forem alteradas ou publicadas.
 
 ## Status
 
 Projeto em desenvolvimento ativo, com foco em paridade entre a experiencia web e o aplicativo GO REGISTER.
-# Backend seguro
-
-O GitHub Pages publica apenas `index.html`, `app.js`, `styles.css`, `assets/` e `admin/`. Functions, regras e índices têm deploy separado e manual.
-
-## Desenvolvimento e testes
-
-```bash
-npm ci
-npm ci --prefix functions
-npm test
-npx firebase-tools emulators:start --only auth,firestore,functions
-npm run emulators:test
-```
-
-Deploy manual, após os testes:
-
-```bash
-npx firebase-tools deploy --project goregister-7394b --only firestore:rules,firestore:indexes,functions
-```
-
-O workflow `firebase-deploy.yml` requer ambiente GitHub protegido `production` e secrets `FIREBASE_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER` e `GCP_SERVICE_ACCOUNT`. Configure projetos separados de homologação e produção; nunca reutilize dados ou credenciais reais nos testes.
-
-Veja [docs/firestore-data-contract.md](docs/firestore-data-contract.md) para o contrato compartilhado com Android e [docs/migration.md](docs/migration.md) antes de migrar dados.
-
-O painel da plataforma usa callable Functions para criar, editar e desativar empresas, administradores e usuários. A exclusão normal de empresa é uma desativação com revogação de contas; `permanentlyDeleteCompany` é uma operação separada que exige empresa previamente inativa e confirmação `DELETE:<companyId>`.
-
-Históricos operacionais usam listeners limitados aos 200 registros mais recentes e carregamento sob demanda. Produtos excluídos recebem tombstone e continuam disponíveis para relatórios e sincronização histórica.

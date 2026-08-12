@@ -5,136 +5,96 @@ service cloud.firestore {
     function platformAdmin() {
       return signedIn()
         && exists(/databases/$(database)/documents/platform_admins/$(request.auth.uid))
-        && get(/databases/$(database)/documents/platform_admins/$(request.auth.uid)).data.isActive != false;
+        && (!('isActive' in get(/databases/$(database)/documents/platform_admins/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/platform_admins/$(request.auth.uid)).data.isActive == true);
     }
     function activeCompany(companyId) {
       return exists(/databases/$(database)/documents/companies/$(companyId))
         && get(/databases/$(database)/documents/companies/$(companyId)).data.isActive == true;
     }
-    function profile(companyId) {
+    function companyProfile(companyId) {
       return get(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid)).data;
     }
     function companyUser(companyId) {
-      return signedIn() && activeCompany(companyId)
+      return signedIn()
+        && activeCompany(companyId)
         && exists(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid))
-        && profile(companyId).isActive != false
-        && (!('companyId' in profile(companyId)) || profile(companyId).companyId == companyId)
-        && (!('empresa_id' in profile(companyId)) || profile(companyId).empresa_id == companyId);
+        && (!('isActive' in companyProfile(companyId)) || companyProfile(companyId).isActive == true);
     }
     function companyAdmin(companyId) {
-      return companyUser(companyId) && profile(companyId).role in ['ADMIN', 'MASTER_ADMIN'];
+      return companyUser(companyId) && companyProfile(companyId).role in ['ADMIN', 'MASTER_ADMIN'];
     }
-    function companyMasterAdmin(companyId) {
-      return companyUser(companyId) && profile(companyId).role == 'MASTER_ADMIN';
+    function belongsToCompany(data, companyId) {
+      return !('empresa_id' in data) || data.empresa_id == companyId;
     }
-    function tenantFieldsValid(data, companyId) {
-      return (!('companyId' in data) || data.companyId == companyId)
-        && (!('empresa_id' in data) || data.empresa_id == companyId);
-    }
-    function protectedProductFieldsUnchanged() {
-      return !request.resource.data.diff(resource.data).affectedKeys()
-        .hasAny(['stockQuantity', 'isDeleted', 'deletedAt', 'deletedByUid', 'companyId', 'empresa_id']);
-    }
-
     match /platform_admins/{uid} {
-      allow read: if platformAdmin();
-      allow write: if false;
-    }
-    match /platform_audit_logs/{documentId} {
-      allow read: if platformAdmin();
-      allow write: if false;
+      allow read, create, update: if platformAdmin();
+      allow delete: if platformAdmin() && request.auth.uid != uid;
     }
 
-    match /public_companies/{alias} {
-      allow get: if resource.data.keys().hasOnly(['alias', 'name', 'logo', 'isActive', 'companyId']);
-      allow list: if false;
-      allow write: if false;
+    match /companies/{companyId} {
+      allow read: if resource.data.isActive == true || platformAdmin();
+      allow create, update, delete: if platformAdmin();
+
+      match /users/{uid} {
+        allow read: if platformAdmin()
+          || (signedIn() && activeCompany(companyId) && request.auth.uid == uid)
+          || (companyUser(companyId) && companyAdmin(companyId));
+        allow create: if platformAdmin()
+          || (companyAdmin(companyId) && belongsToCompany(request.resource.data, companyId));
+        allow update: if platformAdmin() || (companyAdmin(companyId)
+          && belongsToCompany(resource.data, companyId)
+          && belongsToCompany(request.resource.data, companyId));
+        allow delete: if platformAdmin() || (companyAdmin(companyId)
+          && request.auth.uid != uid && belongsToCompany(resource.data, companyId));
+      }
+
+      match /settings/{documentId} {
+        allow read: if platformAdmin() || companyUser(companyId);
+        allow create, update: if platformAdmin() || (documentId != 'cancellation'
+          && companyAdmin(companyId)
+          && belongsToCompany(request.resource.data, companyId));
+        allow delete: if platformAdmin() || (documentId != 'cancellation'
+          && companyAdmin(companyId)
+          && belongsToCompany(resource.data, companyId));
+      }
+
+      match /company_profile/{documentId} {
+        allow read: if documentId == 'official'
+          && (platformAdmin() || companyAdmin(companyId));
+        allow create, update, delete: if documentId == 'official' && platformAdmin();
+      }
+
+      match /receipt_settings/{documentId} {
+        allow read: if documentId == 'official'
+          && (platformAdmin() || companyUser(companyId));
+        allow create, update, delete: if documentId == 'official' && platformAdmin();
+      }
+
+      match /{collectionName}/{documentId} {
+        allow read: if collectionName in ['products', 'sales', 'categories', 'suppliers',
+          'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
+          && (platformAdmin() || companyUser(companyId));
+        allow create, update: if collectionName in ['products', 'sales', 'categories', 'suppliers',
+          'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
+          && (platformAdmin() || (companyUser(companyId)
+            && belongsToCompany(request.resource.data, companyId)));
+        allow delete: if collectionName in ['products', 'sales', 'categories', 'suppliers',
+          'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
+          && (platformAdmin() || (companyUser(companyId)
+            && belongsToCompany(resource.data, companyId)));
+      }
     }
 
     match /login_aliases/{aliasId} {
       allow get: if resource.data.empresa_id is string && activeCompany(resource.data.empresa_id);
       allow list: if false;
-      allow write: if false;
+      allow create, update: if platformAdmin() || (request.resource.data.empresa_id is string
+        && companyAdmin(request.resource.data.empresa_id));
+      allow delete: if platformAdmin() || (resource.data.empresa_id is string
+        && companyAdmin(resource.data.empresa_id));
     }
 
-    match /companies/{companyId} {
-      allow read: if platformAdmin() || companyUser(companyId);
-      allow create, update, delete: if false;
-
-      match /users/{uid} {
-        allow read: if platformAdmin() || (companyUser(companyId)
-          && (request.auth.uid == uid || companyAdmin(companyId)));
-        allow write: if false;
-      }
-
-      match /products/{productId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow create: if companyAdmin(companyId)
-          && tenantFieldsValid(request.resource.data, companyId)
-          && (!('stockQuantity' in request.resource.data) || request.resource.data.stockQuantity == 0);
-        allow update: if companyAdmin(companyId)
-          && tenantFieldsValid(request.resource.data, companyId)
-          && protectedProductFieldsUnchanged();
-        allow delete: if false;
-      }
-
-      match /categories/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow create, update: if companyAdmin(companyId) && tenantFieldsValid(request.resource.data, companyId);
-        allow delete: if companyAdmin(companyId);
-      }
-      match /suppliers/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow create, update: if companyAdmin(companyId) && tenantFieldsValid(request.resource.data, companyId);
-        allow delete: if companyAdmin(companyId);
-      }
-      match /settings/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow create, update: if companyAdmin(companyId)
-          && tenantFieldsValid(request.resource.data, companyId)
-          && !request.resource.data.keys().hasAny(['password', 'passwordHash', 'pin', 'hash']);
-        allow delete: if companyMasterAdmin(companyId);
-      }
-
-      match /sales/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow write: if false;
-      }
-      match /stock_movements/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow write: if false;
-      }
-      match /cash_registers/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow write: if false;
-      }
-      match /financial_entries/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow write: if false;
-      }
-      match /financial_exits/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
-        allow write: if false;
-      }
-      match /audit_logs/{documentId} {
-        allow read: if platformAdmin() || companyAdmin(companyId);
-        allow write: if false;
-      }
-      match /private_settings/{documentId} {
-        allow read, write: if false;
-      }
-      match /operations/{documentId} {
-        allow read, write: if false;
-      }
-      match /counters/{documentId} {
-        allow read, write: if false;
-      }
-      match /{collectionName}/{documentId} {
-        allow read, write: if false;
-      }
-    }
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    match /{document=**} { allow read, write: if false; }
   }
 }

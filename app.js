@@ -69,6 +69,8 @@ function initialTheme() {
 const state = {
   user: null,
   company: null,
+  companyProfile: null,
+  receiptSettings: null,
   authStage: "loading",
   view: "dashboard",
   theme: initialTheme(),
@@ -103,6 +105,7 @@ const state = {
   lastSync: null,
 };
 let unsubscribers = [];
+let checkoutInProgress = false;
 
 const navItems = [
   ["dashboard", "Painel", "dashboard", "all"],
@@ -121,9 +124,9 @@ const dateOnly = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium" });
 const paymentLabels = {
   CASH: "Dinheiro",
   PIX: "Pix",
-  DEBIT_CARD: "Cartão de Débito",
-  CREDIT_CARD: "Cartão de Crédito",
-  CREDIT_CREDIT: "Cartão de Crédito",
+  DEBIT_CARD: "Cartao de Debito",
+  CREDIT_CARD: "Cartao de Credito",
+  CREDIT_CREDIT: "Cartao de Credito",
 };
 
 const paymentOptions = [
@@ -197,6 +200,37 @@ function saleAmount(record) {
   return Number(sale.finalAmount ?? sale.final_amount ?? sale.totalAmount ?? sale.total_amount ?? sale.amount ?? record?.finalAmount ?? record?.final_amount ?? record?.totalAmount ?? record?.total_amount ?? record?.amount) || 0;
 }
 
+function salePaymentParts(record) {
+  const sale = saleData(record);
+  const total = saleAmount(record);
+  const primaryMethod = paymentMethodValue(record) || "CASH";
+  const secondaryMethod = normalizePaymentMethod(
+    sale.secondaryPaymentMethod ?? sale.secondary_payment_method ?? ""
+  );
+  const secondaryAmount = Number(
+    sale.secondaryPaymentAmount ?? sale.secondary_payment_amount ?? 0
+  ) || 0;
+  const totalCents = Math.round(total * 100);
+  const secondaryCents = Math.round(secondaryAmount * 100);
+
+  if (!secondaryMethod || secondaryMethod === primaryMethod || secondaryCents <= 0 || secondaryCents >= totalCents) {
+    return [{ method: primaryMethod, amount: totalCents / 100 }];
+  }
+  return [
+    { method: primaryMethod, amount: (totalCents - secondaryCents) / 100 },
+    { method: secondaryMethod, amount: secondaryCents / 100 },
+  ];
+}
+
+function salePaymentSummary(record, includeAmounts = true) {
+  const parts = salePaymentParts(record);
+  if (parts.length === 1) return paymentMethodLabel(parts[0].method);
+  return parts.map((part) => includeAmounts
+    ? `${paymentMethodLabel(part.method)} ${money.format(part.amount)}`
+    : paymentMethodLabel(part.method)
+  ).join(" + ");
+}
+
 function paymentMethodValue(record) {
   const sale = saleData(record);
   const raw = sale.paymentMethod ?? sale.payment_method ?? record?.paymentMethod ?? record?.payment_method ?? record?.method;
@@ -217,6 +251,7 @@ function normalizePaymentMethod(value) {
     DINHEIRO: "CASH",
     CARTAO_DE_DEBITO: "DEBIT_CARD",
     CARTAO_DE_CREDITO: "CREDIT_CARD",
+    CREDIT_CREDIT: "CREDIT_CARD",
     CREDITO: "CREDIT_CARD",
     DEBITO: "DEBIT_CARD",
   };
@@ -245,12 +280,6 @@ function paymentMethodGroupLabel(recordOrMethod) {
     OTHER: "Outros",
   };
   return labels[group] || paymentMethodLabel(recordOrMethod);
-}
-
-function financialMovementSubtitle(record) {
-  const payment = paymentMethodLabel(record);
-  const category = String(record?.category || "").trim();
-  return category ? `${payment} - ${category}` : payment;
 }
 
 function safeSessionUser(user) {
@@ -452,13 +481,6 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function formatTaxId(value) {
-  const digits = String(value || "").replace(/\D/g, "");
-  if (digits.length === 11) return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
-  if (digits.length === 14) return digits.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
-  return String(value || "").trim();
-}
-
 function parseDecimal(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   const normalized = String(value ?? "")
@@ -584,6 +606,8 @@ function clearSubscriptions() {
   unsubscribers.forEach((unsubscribe) => unsubscribe());
   unsubscribers = [];
   state.loadedCollections.clear();
+  state.companyProfile = null;
+  state.receiptSettings = null;
   state.activeRegisterControl = null;
   state.activeRegisterControlInitialized = false;
   Object.keys(state.data).forEach((key) => { state.data[key] = []; });
@@ -659,6 +683,7 @@ function syncSessionUser() {
     return;
   }
   state.user = safeSessionUser(user);
+  if (!isPrivilegedRole(state.user.role)) state.companyProfile = null;
 }
 
 function syncCartProducts() {
@@ -688,7 +713,7 @@ function renderCompanyLogin(error = "") {
         <p class="muted login-subtitle">Selecione sua empresa para continuar</p>
         <label class="field">
           <span>Empresa</span>
-          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Identificador da empresa" required /></span>
+          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Código, CNPJ ou acesso" required /></span>
         </label>
         <p class="error">${escapeHtml(error)}</p>
         <button class="btn full" type="submit">Continuar</button>
@@ -755,17 +780,88 @@ function appSetting(id) {
   return state.data.settings.find((item) => docKey(item, item.id) === String(id) || String(item.id ?? "") === String(id));
 }
 
+async function loadOfficialCompanyProfile() {
+  state.companyProfile = null;
+  if (!state.user || !isPrivilegedRole(state.user.role) || !tenantId()) return false;
+  const requestedCompanyId = tenantId();
+  try {
+    const profileSnapshot = await getDoc(doc(db, "companies", requestedCompanyId, "company_profile", "official"));
+    if (!state.user || !isPrivilegedRole(state.user.role) || tenantId() !== requestedCompanyId) return false;
+    // Um documento oficial existente e canonico, inclusive quando algum campo foi apagado.
+    // Sem documento, mantemos o root completo apenas em memoria para empresas legadas.
+    state.companyProfile = profileSnapshot.exists()
+      ? { ...profileSnapshot.data(), __officialProfile: true }
+      : { ...(state.company || {}), __officialProfile: false };
+    return true;
+  } catch (error) {
+    if (!state.user || tenantId() !== requestedCompanyId) return false;
+    state.companyProfile = null;
+    console.warn("Nao foi possivel carregar o perfil oficial da empresa.", error);
+    return false;
+  }
+}
+
+function receiptSettingValue(settings, keys, maxLength, preserveLines = false) {
+  let value = "";
+  for (const key of keys) {
+    const candidate = settings?.[key];
+    if (typeof candidate !== "string" && typeof candidate !== "number") continue;
+    value = String(candidate).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trim();
+    if (value) break;
+  }
+  if (!value) return "";
+  value = preserveLines
+    ? value.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(/[ \t]+/g, " ").trim()).join("\n").replace(/\n{3,}/g, "\n\n")
+    : value.replace(/\s+/g, " ");
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function safeReceiptSettings(settings) {
+  return {
+    socialMedia: receiptSettingValue(settings, ["socialMedia", "socialNetworks", "socialNetwork", "redesSociais", "redes_sociais"], 240),
+    receiptMessage: receiptSettingValue(settings, ["receiptMessage", "customReceiptMessage", "mensagemRecibo", "mensagem_recibo"], 500, true),
+    exchangePolicy: receiptSettingValue(settings, ["exchangePolicy", "returnPolicy", "refundPolicy", "politicaTroca", "politica_troca", "politicaDeTroca"], 1200, true),
+  };
+}
+
+function sessionUserKey(user) {
+  return String(user?.uid || user?.docId || user?.id || "");
+}
+
+async function loadReceiptSettings() {
+  state.receiptSettings = null;
+  if (!state.user || !tenantId()) return false;
+  const requestedCompanyId = tenantId();
+  const requestedUserKey = sessionUserKey(state.user);
+  try {
+    const settingsSnapshot = await getDoc(doc(db, "companies", requestedCompanyId, "receipt_settings", "official"));
+    if (!state.user || tenantId() !== requestedCompanyId || sessionUserKey(state.user) !== requestedUserKey) return false;
+    state.receiptSettings = safeReceiptSettings(settingsSnapshot.exists() ? settingsSnapshot.data() : {});
+    return true;
+  } catch (error) {
+    if (!state.user || tenantId() !== requestedCompanyId || sessionUserKey(state.user) !== requestedUserKey) return false;
+    state.receiptSettings = {};
+    console.warn("Nao foi possivel carregar as configuracoes publicas do recibo.", error);
+    return false;
+  }
+}
+
 function cancellationPasswordHash() {
   return appSetting("cancellation")?.passwordHash || "";
 }
 
 async function verifyCancellationPassword(password) {
   const storedHash = cancellationPasswordHash();
-  if (!storedHash) return String(password || "") === defaultAdmin.password;
+  if (!storedHash) return false;
   return await verifyPassword(password, storedHash);
 }
 
 async function requestCancellationAuthorization() {
+  if (!cancellationPasswordHash()) {
+    toast("Senha de cancelamento não configurada. Defina-a no site de administração.");
+    return false;
+  }
   const form = await openFormDialog("Autorizar Cancelamento", `
     <p class="muted">Informe a senha de cancelamento para confirmar esta operacao.</p>
     ${input("password", "Senha de cancelamento", "", "password")}
@@ -774,30 +870,6 @@ async function requestCancellationAuthorization() {
   const allowed = await verifyCancellationPassword(form.get("password"));
   if (!allowed) toast("Senha de cancelamento invalida.");
   return allowed;
-}
-
-async function changeCancellationPassword() {
-  if (!isMasterAdmin()) return toast("Apenas o administrador mestre pode alterar a senha de cancelamento.");
-  const form = await openFormDialog("Senha de Cancelamento", `
-    <p class="muted">Essa senha sera solicitada ao cancelar vendas, entradas ou saidas.</p>
-    ${input("password", "Nova senha", "", "password")}
-    ${input("confirmPassword", "Confirmar senha", "", "password")}
-  `, "Alterar senha", "lock");
-  if (!form) return;
-  const password = String(form.get("password") || "");
-  const confirmPassword = String(form.get("confirmPassword") || "");
-  if (!isAllowedPassword(password)) return toast("A senha deve ter pelo menos 6 caracteres, ou use admin.");
-  if (password !== confirmPassword) return toast("As senhas nao conferem.");
-  await runAction(async () => {
-    const setting = {
-      id: "cancellation",
-      passwordHash: await hashPassword(password),
-      updatedAt: Date.now(),
-      updatedBy: Number(currentUser()?.id) || 0,
-    };
-    await setDoc(tenantDocument(collections.settings, "cancellation"), tenantPayload({ ...setting, id: "cancellation" }));
-    state.data.settings = [...state.data.settings.filter((item) => item.id !== "cancellation"), { ...setting, id: "cancellation", empresa_id: tenantId(), docId: tenantDocId("cancellation") }];
-  }, "Senha de cancelamento alterada.");
 }
 
 async function logout() {
@@ -917,7 +989,7 @@ function allTransactions() {
       id: saleId,
       kind: "sale",
       title: saleTransactionTitle(item),
-      subtitle: paymentMethodLabel(item),
+      subtitle: `${salePaymentSummary(item)} - Venda #${saleId ?? "-"}`,
       amount: saleAmount(item),
       timestamp: saleTimestamp(item),
       isCancelled: saleIsCancelled(item),
@@ -929,22 +1001,22 @@ function allTransactions() {
     id: item.id,
     kind: "entry",
     title: item.description || "Entrada",
-    subtitle: financialMovementSubtitle(item),
+    subtitle: item.category || paymentMethodLabel(item.paymentMethod),
     amount: Number(item.amount) || 0,
     timestamp: Number(item.timestamp) || 0,
     isCancelled: Boolean(item.isCancelled),
-    method: paymentMethodValue(item),
+    method: item.paymentMethod,
     refId: docKey(item, item.id),
   }));
   const exits = state.data.exits.map((item) => ({
     id: item.id,
     kind: "exit",
     title: item.description || "Saida",
-    subtitle: financialMovementSubtitle(item),
+    subtitle: item.category || paymentMethodLabel(item.paymentMethod),
     amount: Number(item.amount) || 0,
     timestamp: Number(item.timestamp) || 0,
     isCancelled: Boolean(item.isCancelled),
-    method: paymentMethodValue(item),
+    method: item.paymentMethod,
     refId: docKey(item, item.id),
   }));
   return [...saleRows, ...entries, ...exits].sort((a, b) => b.timestamp - a.timestamp);
@@ -953,7 +1025,7 @@ function allTransactions() {
 function saleTransactionTitle(record) {
   const products = saleProductNames(record);
   if (products && products !== "N/A") return products;
-  return "Venda";
+  return `Venda #${saleData(record).id ?? record?.docId ?? "-"}`;
 }
 
 function renderDashboard() {
@@ -1189,21 +1261,114 @@ function renderCash() {
 
 function registerReport(register) {
   const registerId = Number(register.id);
-  const sales = state.data.sales
+  const registerSales = state.data.sales
     .filter((item) => {
       const sale = saleData(item);
       return Number(sale.cashRegisterId) === registerId && !saleIsCancelled(item);
-    })
-    .reduce((sum, item) => sum + saleAmount(item), 0);
-  const entries = state.data.entries
-    .filter((item) => Number(item.cashRegisterId) === registerId && !item.isCancelled)
+    });
+  const sales = registerSales.reduce((sum, item) => sum + saleAmount(item), 0);
+  const cashSales = registerSales.reduce((sum, item) => sum + salePaymentParts(item)
+    .filter((part) => paymentMethodGroup(part.method) === "CASH")
+    .reduce((subtotal, part) => subtotal + part.amount, 0), 0);
+  const registerEntries = state.data.entries
+    .filter((item) => Number(item.cashRegisterId) === registerId && !item.isCancelled);
+  const entries = registerEntries
     .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const exits = state.data.exits
-    .filter((item) => Number(item.cashRegisterId) === registerId && !item.isCancelled)
+  const cashEntries = registerEntries
+    .filter((item) => paymentMethodGroup(item.paymentMethod) === "CASH")
     .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const expected = (Number(register.initialBalance) || 0) + sales + entries - exits;
+  const registerExits = state.data.exits
+    .filter((item) => Number(item.cashRegisterId) === registerId && !item.isCancelled);
+  const exits = registerExits
+    .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const cashExits = registerExits
+    .filter((item) => paymentMethodGroup(item.paymentMethod) === "CASH")
+    .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const expected = (Number(register.initialBalance) || 0) + cashSales + cashEntries - cashExits;
   const closing = register.closingBalance == null ? null : Number(register.closingBalance);
-  return { sales, entries, exits, expected, closing, difference: closing == null ? null : closing - expected };
+  return { sales, entries, exits, cashSales, cashEntries, cashExits, expected, closing, difference: closing == null ? null : closing - expected };
+}
+
+function parseMoneyCents(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) : null;
+  }
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/^R\$/i, "");
+  if (!/^\d[\d.,]*$/.test(normalized)) return null;
+
+  const lastComma = normalized.lastIndexOf(",");
+  const lastDot = normalized.lastIndexOf(".");
+  const lastSeparator = Math.max(lastComma, lastDot);
+  const trailingDigits = lastSeparator >= 0 ? normalized.length - lastSeparator - 1 : 0;
+  const hasBothSeparators = lastComma >= 0 && lastDot >= 0;
+  const shouldUseDecimals = lastSeparator >= 0 && (
+    hasBothSeparators || trailingDigits === 1 || trailingDigits === 2
+  );
+  const integerPart = shouldUseDecimals ? normalized.slice(0, lastSeparator) : normalized;
+  const fraction = shouldUseDecimals ? normalized.slice(lastSeparator + 1) : "";
+  if (shouldUseDecimals && !/^\d{1,2}$/.test(fraction)) return null;
+
+  const integerGroups = integerPart.split(/[.,]/);
+  if (integerGroups.some((group) => !/^\d+$/.test(group))) return null;
+  if (integerGroups.length > 1 && (
+    !/^\d{1,3}$/.test(integerGroups[0]) ||
+    integerGroups.slice(1).some((group) => group.length !== 3)
+  )) return null;
+
+  const whole = integerGroups.join("");
+  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) ? cents : null;
+}
+
+function formatMoneyCentsInput(cents) {
+  return (Math.max(0, Number(cents) || 0) / 100).toFixed(2).replace(".", ",");
+}
+
+function cartTotals(cartItems = state.cart) {
+  const totalCents = Math.max(0, Math.round(cartItems.reduce(
+    (sum, item) => sum + (Number(item.product?.sellingPrice) || 0) * (Number(item.quantity) || 0),
+    0
+  ) * 100));
+  const discountCents = Math.min(
+    Math.max(0, Math.round(parseDecimal(state.discount) * 100)),
+    totalCents
+  );
+  return { totalCents, discountCents, finalCents: totalCents - discountCents };
+}
+
+function normalizeCheckoutPayments(payments, totalCents) {
+  if (!Number.isSafeInteger(totalCents) || totalCents <= 0) {
+    throw new Error("O total da venda deve ser maior que zero.");
+  }
+  if (!Array.isArray(payments) || payments.length < 1 || payments.length > 2) {
+    throw new Error("Informe uma ou duas formas de pagamento.");
+  }
+  const normalized = payments.map((part) => ({
+    method: normalizePaymentMethod(part?.method),
+    amountCents: Number(part?.amountCents),
+  }));
+  if (normalized.some((part) => !paymentOptions.some(([method]) => method === part.method))) {
+    throw new Error("Selecione uma forma de pagamento valida.");
+  }
+  if (normalized.some((part) => !Number.isSafeInteger(part.amountCents) || part.amountCents <= 0)) {
+    throw new Error(payments.length === 2
+      ? "Informe um valor maior que zero nos dois pagamentos."
+      : "Informe um valor de pagamento maior que zero.");
+  }
+  if (normalized.length === 2 && normalized[0].method === normalized[1].method) {
+    throw new Error("Selecione duas formas de pagamento diferentes.");
+  }
+  const informedCents = normalized.reduce((sum, part) => sum + part.amountCents, 0);
+  if (informedCents < totalCents) {
+    throw new Error(`Faltam ${money.format((totalCents - informedCents) / 100)} para completar o total.`);
+  }
+  if (informedCents > totalCents) {
+    throw new Error(`O valor informado excede o total em ${money.format((informedCents - totalCents) / 100)}.`);
+  }
+  return normalized;
 }
 
 function renderCashHistory() {
@@ -1316,7 +1481,7 @@ function reportFinancialMovements(bounds) {
     timestamp: Number(item.timestamp) || 0,
     description: item.description || (kind === "entry" ? "Entrada" : "Saida"),
     category: String(item.category || "").trim(),
-    paymentMethod: paymentMethodValue(item),
+    paymentMethod: item.paymentMethod,
     cashRegisterId: item.cashRegisterId,
     amount: Number(item.amount) || 0,
     isCancelled: Boolean(item.isCancelled),
@@ -1364,13 +1529,15 @@ function reportPeriodLabel(bounds) {
 function reportPaymentTotals(sales, financialMovements = []) {
   const totals = sales.reduce((totals, record) => {
     const amount = saleAmount(record);
-    const group = paymentMethodGroup(record);
     totals.total += amount;
     totals.stock += amount;
-    if (group === "PIX") totals.pix += amount;
-    else if (group === "CARD") totals.card += amount;
-    else if (group === "CASH") totals.cash += amount;
-    else totals.other += amount;
+    salePaymentParts(record).forEach((part) => {
+      const group = paymentMethodGroup(part.method);
+      if (group === "PIX") totals.pix += part.amount;
+      else if (group === "CARD") totals.card += part.amount;
+      else if (group === "CASH") totals.cash += part.amount;
+      else totals.other += part.amount;
+    });
     return totals;
   }, { total: 0, stock: 0, manual: 0, pix: 0, card: 0, cash: 0, other: 0 });
   financialMovements.filter((item) => item.kind === "entry" && !item.isCancelled).forEach((item) => {
@@ -1396,7 +1563,7 @@ function reportConsolidatedRows(sales, financialMovements, manualStockEntries) {
       type: "VENDA",
       typeClass: "good",
       description: saleProductNames(record),
-      detail: paymentMethodGroupLabel(record),
+      detail: salePaymentSummary(record),
       quantity: quantity ? formatDecimalInput(quantity) : "-",
       amount: saleAmount(record),
       amountClass: "plus",
@@ -1586,7 +1753,6 @@ function renderSettings() {
             <button class="settings-row" data-view="stockHistory">${icon("history")}<span><strong>Historico de Estoque</strong><small>Entradas, saidas e ajustes</small></span></button>
             <button class="settings-row" data-view="categories">${icon("category")}<span><strong>Categorias</strong><small>Cadastro auxiliar de produtos</small></span></button>
             <button class="settings-row" data-view="suppliers">${icon("local_shipping")}<span><strong>Fornecedores</strong><small>Cadastro auxiliar de produtos</small></span></button>
-            ${isMasterAdmin() ? `<button class="settings-row" data-action="cancel-password">${icon("password")}<span><strong>Senha de Cancelamento</strong><small>Alterar senha usada para cancelar transacoes</small></span></button>` : ""}
           </div>
         </div>
       ` : ""}
@@ -1810,7 +1976,6 @@ const actions = {
   "refresh-data": () => renderApp(),
   "export-inventory": () => exportInventoryCsv(),
   "export-backup": () => exportBackupJson(),
-  "cancel-password": () => changeCancellationPassword(),
   "exit-company": () => exitCompany(),
   "clear-cash-history-filter": () => {
     state.filters.cashHistoryDate = "";
@@ -1832,8 +1997,13 @@ function openModal(title, body, onSubmit) {
     </div>
   `;
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
+  let submitting = false;
   document.querySelector("#modalForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (submitting) return;
+    submitting = true;
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    if (submitButton) submitButton.disabled = true;
     try {
       const afterSave = await onSubmit(new FormData(event.currentTarget));
       state.firebaseError = "";
@@ -1848,6 +2018,8 @@ function openModal(title, body, onSubmit) {
         state.firebaseError = message;
       }
       toast(message);
+      submitting = false;
+      if (submitButton) submitButton.disabled = false;
     }
   });
 }
@@ -2113,7 +2285,7 @@ function getReportPeriod(period) {
     return {
       startTime: bounds[0],
       endTime: bounds[1],
-      title: "Relatorio de Vendas - Diario",
+      title: "Relatório de Vendas - Diário",
       filename: "relatorio_vendas_diario.pdf",
     };
   }
@@ -2123,7 +2295,7 @@ function getReportPeriod(period) {
     return {
       startTime: bounds[0],
       endTime: bounds[1],
-      title: `Relatorio de Vendas - ${label}`,
+      title: `Relatório de Vendas - ${label}`,
       filename: `relatorio_vendas_${selectedDate}.pdf`,
     };
   }
@@ -2131,7 +2303,7 @@ function getReportPeriod(period) {
     return {
       startTime: bounds[0],
       endTime: bounds[1],
-      title: "Relatorio de Vendas - Semanal",
+      title: "Relatório de Vendas - Semanal",
       filename: "relatorio_vendas_semanal.pdf",
     };
   }
@@ -2142,7 +2314,7 @@ function getReportPeriod(period) {
   return {
     startTime: bounds[0],
     endTime: bounds[1],
-    title: `Relatorio de Vendas - ${month} ${year}`,
+    title: `Relatório de Vendas - ${month} ${year}`,
     filename: `relatorio_vendas_${month.toLowerCase()}.pdf`,
   };
 }
@@ -2158,7 +2330,7 @@ function saleProductNames(record) {
   return names.length ? names.join(", ") : "N/A";
 }
 
-function exportSalesReport(period) {
+async function exportSalesReport(period) {
   if (!isAdmin()) {
     toast("Acesso restrito ao administrador.");
     return;
@@ -2176,7 +2348,34 @@ function exportSalesReport(period) {
   const manualStockEntries = reportManualStockEntries(bounds);
   const rows = reportConsolidatedRows(sales, financialMovements, manualStockEntries);
   const paymentTotals = reportPaymentTotals(sales, financialMovements);
-  const pdf = createSalesReportPdf(report.title, `Data de exportacao: ${dateTime.format(new Date())}`, rows, paymentTotals);
+  if (!await loadOfficialCompanyProfile()) {
+    toast("Não foi possível carregar os dados empresariais. Verifique a conexão e as regras do Firebase.");
+    return;
+  }
+  // O perfil privado e usado apenas em memoria e nunca e salvo no cache da empresa.
+  // Em empresas migradas, somente campos basicos do root complementam o documento canonico.
+  const rootCompany = state.company || {};
+  const baseCompany = state.companyProfile?.__officialProfile
+    ? {
+      name: rootCompany.name,
+      identifier: rootCompany.identifier,
+      identifierNormalized: rootCompany.identifierNormalized,
+      address: rootCompany.address,
+      phone: rootCompany.phone,
+    }
+    : rootCompany;
+  const { __officialProfile, ...officialProfile } = state.companyProfile || {};
+  const reportCompany = {
+    ...baseCompany,
+    ...officialProfile,
+  };
+  const pdf = createSalesReportPdf(
+    report.title,
+    `Data de exportação: ${dateTime.format(new Date())}`,
+    rows,
+    paymentTotals,
+    reportCompany
+  );
   downloadBlob(pdf, report.filename, "application/pdf");
   toast("Relatorio exportado.");
 }
@@ -2246,16 +2445,36 @@ function dateStamp() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function plainPdfText(value) {
+  const winAnsiCharacters = new Map([
+    ["€", 0x80], ["‚", 0x82], ["ƒ", 0x83], ["„", 0x84], ["…", 0x85], ["†", 0x86], ["‡", 0x87],
+    ["ˆ", 0x88], ["‰", 0x89], ["Š", 0x8a], ["‹", 0x8b], ["Œ", 0x8c], ["Ž", 0x8e],
+    ["‘", 0x91], ["’", 0x92], ["“", 0x93], ["”", 0x94], ["•", 0x95], ["–", 0x96], ["—", 0x97],
+    ["˜", 0x98], ["™", 0x99], ["š", 0x9a], ["›", 0x9b], ["œ", 0x9c], ["ž", 0x9e], ["Ÿ", 0x9f],
+  ]);
+  let output = "";
+  for (const character of String(value ?? "").normalize("NFC")) {
+    const codePoint = character.codePointAt(0);
+    if ((codePoint >= 0x20 && codePoint <= 0x7e) || (codePoint >= 0xa0 && codePoint <= 0xff)) {
+      output += character;
+      continue;
+    }
+    if (winAnsiCharacters.has(character)) {
+      output += String.fromCharCode(winAnsiCharacters.get(character));
+      continue;
+    }
+    const fallback = character.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    output += /^[\x20-\x7e]$/.test(fallback) ? fallback : "?";
+  }
+  return output;
+}
+
 function normalizePdfText(value) {
-  return String(value ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\x20-\x7E]/g, "")
-    .replace(/[\\()]/g, "\\$&");
+  return plainPdfText(value).replace(/[\\()]/g, "\\$&");
 }
 
 function wrapPdfText(value, size) {
-  const words = normalizePdfText(value).split(/\s+/).filter(Boolean);
+  const words = plainPdfText(value).split(/\s+/).filter(Boolean);
   const lines = [];
   let line = "";
   words.forEach((word) => {
@@ -2275,28 +2494,168 @@ function pdfTextLine(x, y, size, text, bold = false) {
   return `BT /${bold ? "F2" : "F1"} ${size} Tf ${x} ${y} Td (${normalizePdfText(text)}) Tj ET`;
 }
 
-function createSalesReportPdf(title, generatedAt, rows, paymentTotals) {
+function companyFieldValue(company, keys) {
+  for (const key of keys) {
+    const value = company?.[key];
+    if (typeof value !== "string" && typeof value !== "number") continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function companyDocumentLabel(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 14) return "CNPJ";
+  if (digits.length === 11) return "CPF";
+  return "CPF/CNPJ/Identificador";
+}
+
+function formatCompanyDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const isoDate = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/);
+  if (isoDate) return `${isoDate[3]}/${isoDate[2]}/${isoDate[1]}`;
+  const timestamp = normalizeTimestamp(value);
+  if (!timestamp) return text;
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? text : new Intl.DateTimeFormat("pt-BR").format(date);
+}
+
+function companyReportFields(company) {
+  const fields = [];
+  const seen = new Set();
+  const add = (label, keys, formatter = (value) => value) => {
+    const rawValue = companyFieldValue(company, keys);
+    if (!rawValue) return;
+    const value = String(formatter(rawValue) || "").trim();
+    if (!value) return;
+    const duplicateKey = value.toLocaleLowerCase("pt-BR");
+    if (seen.has(duplicateKey)) return;
+    seen.add(duplicateKey);
+    fields.push({ label, value });
+  };
+
+  add("Nome da empresa", ["name", "nome", "companyName"]);
+  add("Razão social", ["legalName", "corporateName", "razaoSocial", "razao_social"]);
+  add("Nome fantasia", ["tradeName", "fantasyName", "nomeFantasia", "nome_fantasia"]);
+  add("Unidade/Filial", ["unitName", "branchName", "storeName", "nomeUnidade", "nome_unidade", "filial"]);
+
+  const identifier = companyFieldValue(company, ["identifier", "cnpj", "cpf", "taxId", "document", "identifierNormalized"]);
+  if (identifier) {
+    add(companyDocumentLabel(identifier), ["identifier", "cnpj", "cpf", "taxId", "document", "identifierNormalized"], formatCompanyIdentifier);
+  }
+
+  add("Inscrição estadual", ["stateRegistration", "inscricaoEstadual", "inscricao_estadual"]);
+  add("Inscrição municipal", ["municipalRegistration", "inscricaoMunicipal", "inscricao_municipal"]);
+  add("CNAE", ["cnae", "primaryCnae", "mainCnae", "cnaePrincipal", "cnae_principal", "activityCode"]);
+  add("Regime tributário", ["taxRegime", "taxationRegime", "regimeTributario", "regime_tributario"]);
+  add("Data de abertura", ["openingDate", "foundationDate", "foundedAt", "dataAbertura", "data_abertura"], formatCompanyDate);
+  add("Endereço", ["address", "endereco"]);
+  add("Número", ["addressNumber", "number", "numero"]);
+  add("Complemento", ["addressComplement", "complement", "complemento"]);
+  add("Bairro", ["district", "neighborhood", "bairro"]);
+  add("Cidade", ["city", "cidade"]);
+  add("Estado/UF", ["state", "uf", "estado"]);
+  add("CEP", ["postalCode", "zipCode", "cep"]);
+  add("Telefone", ["phone", "telephone", "telefone"]);
+  add("Celular", ["mobile", "mobilePhone", "celular"]);
+  add("E-mail", ["email", "companyEmail", "contactEmail"]);
+  add("Site", ["website", "site", "url"]);
+  add("Responsável legal", ["responsibleName", "legalRepresentative", "representativeName", "nomeResponsavel", "responsavelLegal", "responsavel_legal"]);
+  add("Cargo do responsável", ["responsibleRole", "representativeRole", "responsiblePosition", "cargoResponsavel", "cargo_responsavel"]);
+  const institutionalNotes = companyFieldValue(company, ["institutionalNotes", "businessNotes", "observacoesInstitucionais", "observacoes_institucionais"]);
+  if (institutionalNotes) {
+    const summarizedNotes = institutionalNotes.length > 480
+      ? `${institutionalNotes.slice(0, 477).trimEnd()}...`
+      : institutionalNotes;
+    fields.push({ label: "Observações institucionais", value: summarizedNotes });
+  }
+
+  // Logo, redes sociais, chave Pix, mensagem de recibo e politica de troca sao dados operacionais.
+  // Eles permanecem fora deste relatorio financeiro, destinado a bancos.
+
+  return fields;
+}
+
+function createSalesReportPdf(title, generatedAt, rows, paymentTotals, company = {}) {
   const width = 595;
   const height = 842;
   const pages = [];
   const totalText = money.format(paymentTotals.total);
-  let lines = [
-    pdfTextLine(40, 802, 18, title, true),
-    pdfTextLine(40, 775, 11, "Relatorio consolidado de vendas"),
-    pdfTextLine(40, 752, 9, generatedAt),
-    pdfTextLine(40, 720, 10, `Total de vendas: ${totalText}`, true),
-    pdfTextLine(225, 720, 10, `Venda manual: ${money.format(paymentTotals.manual)}`, true),
-    pdfTextLine(410, 720, 10, `Venda estoque: ${money.format(paymentTotals.stock)}`, true),
-    pdfTextLine(40, 700, 10, `Pix: ${money.format(paymentTotals.pix)}`, true),
-    pdfTextLine(225, 700, 10, `Dinheiro: ${money.format(paymentTotals.cash)}`, true),
-    pdfTextLine(410, 700, 10, `Cartao: ${money.format(paymentTotals.card)}`, true),
-  ];
-  let y = 660;
+  const companyFields = companyReportFields(company);
+  const companyName = companyFieldValue(company, ["name", "nome", "companyName"]) || "Empresa não informada";
+  const companyIdentifier = companyFieldValue(company, ["identifier", "cnpj", "cpf", "taxId", "document", "identifierNormalized"]);
+  const compactCompany = companyIdentifier
+    ? `${companyName} - ${companyDocumentLabel(companyIdentifier)}: ${formatCompanyIdentifier(companyIdentifier)}`
+    : companyName;
+  let lines = [];
+  let y = 802;
+
+  const startCompanyContinuationPage = () => {
+    pages.push(lines.join("\n"));
+    lines = [];
+    y = 802;
+    lines.push(pdfTextLine(40, y, 18, title, true));
+    y -= 27;
+    lines.push(pdfTextLine(40, y, 11, "Relatório consolidado de vendas"));
+    y -= 25;
+    lines.push(pdfTextLine(40, y, 10, "DADOS DA EMPRESA (CONTINUAÇÃO)", true));
+    y -= 18;
+  };
+
+  const addReportIdentity = (includeAllCompanyFields) => {
+    lines.push(pdfTextLine(40, y, 18, title, true));
+    y -= 27;
+    lines.push(pdfTextLine(40, y, 11, "Relatório consolidado de vendas"));
+    y -= 25;
+
+    if (includeAllCompanyFields) {
+      lines.push(pdfTextLine(40, y, 10, "DADOS DA EMPRESA", true));
+      y -= 18;
+      if (!companyFields.length) {
+        lines.push(pdfTextLine(40, y, 9, "Informações cadastrais não informadas."));
+        y -= 15;
+      } else {
+        companyFields.forEach(({ label, value }) => {
+          const fieldLines = wrapPdfText(`${label}: ${value}`, 88);
+          if (y - fieldLines.length * 13 < 177) startCompanyContinuationPage();
+          fieldLines.forEach((fieldLine) => {
+            // Reserva espaco para data, resumo financeiro e cabecalho da tabela.
+            if (y < 190) startCompanyContinuationPage();
+            lines.push(pdfTextLine(40, y, 9, fieldLine));
+            y -= 13;
+          });
+        });
+      }
+      lines.push(`40 ${y + 3} m 555 ${y + 3} l S`);
+      y -= 10;
+    } else {
+      wrapPdfText(compactCompany, 88).forEach((companyLine) => {
+        lines.push(pdfTextLine(40, y, 9, companyLine, true));
+        y -= 13;
+      });
+    }
+
+    lines.push(pdfTextLine(40, y, 9, generatedAt));
+    y -= 28;
+  };
+
+  const addFinancialSummary = () => {
+    lines.push(pdfTextLine(40, y, 10, `Total de vendas: ${totalText}`, true));
+    lines.push(pdfTextLine(225, y, 10, `Venda manual: ${money.format(paymentTotals.manual)}`, true));
+    lines.push(pdfTextLine(410, y, 10, `Venda estoque: ${money.format(paymentTotals.stock)}`, true));
+    y -= 20;
+    lines.push(pdfTextLine(40, y, 10, `Pix: ${money.format(paymentTotals.pix)}`, true));
+    lines.push(pdfTextLine(225, y, 10, `Dinheiro: ${money.format(paymentTotals.cash)}`, true));
+    lines.push(pdfTextLine(410, y, 10, `Cartão: ${money.format(paymentTotals.card)}`, true));
+    y -= 40;
+  };
 
   const addHeader = () => {
     lines.push(pdfTextLine(40, y, 9, "Data/Hora", true));
     lines.push(pdfTextLine(116, y, 9, "Tipo de venda", true));
-    lines.push(pdfTextLine(205, y, 9, "Descricao", true));
+    lines.push(pdfTextLine(205, y, 9, "Descrição", true));
     lines.push(pdfTextLine(355, y, 9, "Pag./Categoria", true));
     lines.push(pdfTextLine(435, y, 9, "Qtde", true));
     lines.push(pdfTextLine(500, y, 9, "Valor", true));
@@ -2307,21 +2666,15 @@ function createSalesReportPdf(title, generatedAt, rows, paymentTotals) {
     pages.push(lines.join("\n"));
     lines = [];
     y = 802;
+    addReportIdentity(false);
     addHeader();
   };
-  const newPlainPage = () => {
-    pages.push(lines.join("\n"));
-    lines = [
-      pdfTextLine(40, 802, 18, title, true),
-      pdfTextLine(40, 775, 11, "Relatorio consolidado de vendas"),
-      pdfTextLine(40, 758, 9, generatedAt),
-    ];
-    y = 725;
-  };
 
+  addReportIdentity(true);
+  addFinancialSummary();
   addHeader();
   if (!rows.length) {
-    lines.push(pdfTextLine(40, y, 10, "Nenhum movimento encontrado neste periodo."));
+    lines.push(pdfTextLine(40, y, 10, "Nenhum movimento encontrado neste período."));
     y -= 22;
   }
   rows.forEach((row) => {
@@ -2344,36 +2697,70 @@ function createSalesReportPdf(title, generatedAt, rows, paymentTotals) {
   lines.push(pdfTextLine(480, y, 12, totalText, true));
   pages.push(lines.join("\n"));
 
-  return buildPdf(pages, width, height);
+  const pageCount = pages.length;
+  const footerCompanyName = companyName.length > 68 ? `${companyName.slice(0, 65).trimEnd()}...` : companyName;
+  const numberedPages = pages.map((content, index) => [
+    content,
+    "40 42 m 555 42 l S",
+    pdfTextLine(40, 26, 8, footerCompanyName),
+    pdfTextLine(490, 26, 8, `Página ${index + 1} de ${pageCount}`),
+  ].join("\n"));
+  return buildPdf(numberedPages, width, height);
+}
+
+function pdfBytes(value) {
+  const text = String(value ?? "");
+  const bytes = new Uint8Array(text.length);
+  for (let index = 0; index < text.length; index += 1) {
+    bytes[index] = text.charCodeAt(index) & 0xff;
+  }
+  return bytes;
+}
+
+function concatenatePdfBytes(chunks, totalLength) {
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return output;
 }
 
 function buildPdf(pageContents, width, height) {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     `<< /Type /Pages /Kids [${pageContents.map((_, index) => `${5 + index * 2} 0 R`).join(" ")}] /Count ${pageContents.length} >>`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
   ];
   pageContents.forEach((content, index) => {
     const pageId = 5 + index * 2;
     const contentId = pageId + 1;
     objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentId} 0 R >>`);
-    objects.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+    objects.push(`<< /Length ${pdfBytes(content).length} >>\nstream\n${content}\nendstream`);
   });
 
-  let output = "%PDF-1.4\n";
+  const chunks = [];
+  let byteLength = 0;
+  const append = (value) => {
+    const chunk = pdfBytes(value);
+    chunks.push(chunk);
+    byteLength += chunk.length;
+  };
+  append("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n");
   const offsets = [0];
   objects.forEach((object, index) => {
-    offsets.push(output.length);
-    output += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    offsets.push(byteLength);
+    append(`${index + 1} 0 obj\n${object}\nendobj\n`);
   });
-  const xrefOffset = output.length;
-  output += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  const xrefOffset = byteLength;
+  append(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`);
   offsets.slice(1).forEach((offset) => {
-    output += `${String(offset).padStart(10, "0")} 00000 n \n`;
+    append(`${String(offset).padStart(10, "0")} 00000 n \n`);
   });
-  output += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-  return new Blob([output], { type: "application/pdf" });
+  append(`trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+  return new Blob([concatenatePdfBytes(chunks, byteLength)], { type: "application/pdf" });
 }
 
 function downloadBlob(blob, filename, type) {
@@ -2513,8 +2900,8 @@ function openMovementModal(kind) {
       cashRegisterId: Number(open?.id) || 0,
       isCancelled: false,
     }));
-    toast(isEntry ? "Venda manual salva." : "Saida salva.");
-    return () => promptCreateProductFromManualMovement(description, isEntry ? "entry" : "exit");
+    toast(isEntry ? "Venda manual salva sem alterar o estoque." : "Saida salva.");
+    return isEntry ? undefined : () => promptCreateProductFromManualMovement(description, "exit");
   });
 }
 
@@ -2542,124 +2929,329 @@ function openStockAdjustModal(selectedProduct = null) {
   });
 }
 
-function openCheckoutModal() {
-  openModal("Forma de Pagamento", select("paymentMethod", "Pagamento", paymentOptions, "CASH"), async (form) => {
-    return checkout(form.get("paymentMethod"));
-  });
-}
+async function openCheckoutModal() {
+  if (checkoutInProgress) return toast("A venda ja esta sendo finalizada.");
+  if (!currentOpenRegister()) return toast("Abra o caixa antes de finalizar a venda.");
+  if (!state.cart.length) return toast("Adicione produtos ao carrinho.");
 
-function receiptText(sale, items, company) {
-  const saleNumber = sale.id ?? sale.docId;
-  const lines = [
-    "Comprovante de Venda",
-    `Venda: ${saleNumber}`,
-    String(company.name || "GO REGISTER"),
-    formatTaxId(company.taxId),
-    String(company.address || ""),
-    String(company.phone || ""),
-    dateTime.format(new Date(sale.timestamp)),
-    `Pagamento: ${paymentMethodLabel(sale.paymentMethod)}`,
-    "",
-    ...items.flatMap((item) => [
-      String(item.productName || "Produto"),
-      `${item.quantity} × ${money.format(item.unitPrice)} = ${money.format(item.subtotal)}`,
-    ]),
-  ].filter((line) => line !== "");
-  if (Number(sale.discount) > 0) lines.push(`Desconto: ${money.format(sale.discount)}`);
-  lines.push(`Total recebido: ${money.format(sale.finalAmount)}`);
-  lines.push(String(company.receiptFooter || "Obrigado pela preferência!"));
-  return lines.join("\n");
-}
+  const methodForm = await openFormDialog(
+    "Forma de Pagamento",
+    select("paymentMethod", "Pagamento", paymentOptions, "CASH"),
+    "CONTINUAR",
+    "arrow_forward"
+  );
+  if (!methodForm) return;
 
-async function copyText(value) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
+  const primaryMethod = normalizePaymentMethod(methodForm.get("paymentMethod"));
+  const hasMultiplePayments = await openChoiceModal(
+    "Pagamento da compra",
+    "Esta Compra Possui mais de uma forma de pagamento?",
+    "NAO",
+    "SIM"
+  );
+
+  if (hasMultiplePayments) {
+    openSplitPaymentModal(primaryMethod);
     return;
   }
-  const field = document.createElement("textarea");
-  field.value = value;
-  field.setAttribute("readonly", "");
-  field.style.position = "fixed";
-  field.style.opacity = "0";
-  document.body.appendChild(field);
-  field.select();
-  const copied = document.execCommand("copy");
-  field.remove();
-  if (!copied) throw new Error("Falha ao copiar.");
-}
 
-function receiptHtml(sale, items, company) {
-  const saleNumber = sale.id ?? sale.docId;
-  if (saleNumber == null || String(saleNumber) === "" || Number(saleNumber) === 0) {
-    throw new Error("A venda salva não possui um número de comprovante válido.");
+  const { finalCents } = cartTotals();
+  try {
+    const result = await checkout([{ method: primaryMethod, amountCents: finalCents }]);
+    showCompletedCheckout(result);
+  } catch (error) {
+    handleCheckoutError(error);
   }
-  return `
-    <article class="receipt-paper" id="saleReceipt">
-      <header class="receipt-heading">
-        <h2>Comprovante de Venda</h2>
-        <strong>${escapeHtml(company.name || "GO REGISTER")}</strong>
-        ${company.taxId ? `<span>CPF/CNPJ: ${escapeHtml(formatTaxId(company.taxId))}</span>` : ""}
-        ${company.address ? `<span>${escapeHtml(company.address)}</span>` : ""}
-        ${company.phone ? `<span>Telefone: ${escapeHtml(company.phone)}</span>` : ""}
-      </header>
-      <dl class="receipt-meta">
-        <div><dt>Venda</dt><dd>#${escapeHtml(saleNumber)}</dd></div>
-        <div><dt>Data</dt><dd>${escapeHtml(dateTime.format(new Date(sale.timestamp)))}</dd></div>
-        <div><dt>Pagamento</dt><dd>${escapeHtml(paymentMethodLabel(sale.paymentMethod))}</dd></div>
-      </dl>
-      <div class="receipt-items">
-        ${items.map((item) => `
-          <div class="receipt-item">
-            <strong>${escapeHtml(item.productName || "Produto")}</strong>
-            <span>${escapeHtml(item.quantity)} × ${escapeHtml(money.format(item.unitPrice))}</span>
-            <b>${escapeHtml(money.format(item.subtotal))}</b>
-          </div>
-        `).join("")}
-      </div>
-      <div class="receipt-totals">
-        ${Number(sale.discount) > 0 ? `<div><span>Desconto</span><strong>− ${escapeHtml(money.format(sale.discount))}</strong></div>` : ""}
-        <div class="receipt-grand-total"><span>Total recebido</span><strong>${escapeHtml(money.format(sale.finalAmount))}</strong></div>
-      </div>
-      <footer class="receipt-message">${escapeHtml(company.receiptFooter || "Obrigado pela preferência!")}</footer>
-    </article>
-  `;
 }
 
-function openReceiptModal(sale, items) {
-  const company = { ...state.company };
-  document.querySelector("#modalRoot").innerHTML = `
-    <div class="modal-backdrop receipt-modal-backdrop">
-      <section class="modal receipt-modal" role="dialog" aria-modal="true" aria-labelledby="receiptTitle">
-        <header><h2 id="receiptTitle">Venda concluída</h2><button class="icon-btn" type="button" data-close-receipt>${icon("close")}</button></header>
-        <div class="receipt-scroll">${receiptHtml(sale, items, company)}</div>
+function splitPaymentValidation(firstMethod, firstCents, secondMethod, secondCents, totalCents) {
+  if (firstCents == null || secondCents == null || firstCents <= 0 || secondCents <= 0) {
+    return "Informe um valor maior que zero nos dois pagamentos.";
+  }
+  if (normalizePaymentMethod(firstMethod) === normalizePaymentMethod(secondMethod)) {
+    return "Selecione duas formas de pagamento diferentes.";
+  }
+  const informedCents = firstCents + secondCents;
+  if (informedCents < totalCents) {
+    return `Faltam ${money.format((totalCents - informedCents) / 100)} para completar o total.`;
+  }
+  if (informedCents > totalCents) {
+    return `O valor informado excede o total em ${money.format((informedCents - totalCents) / 100)}.`;
+  }
+  return "";
+}
+
+function openSplitPaymentModal(primaryMethod) {
+  const { finalCents } = cartTotals();
+  if (finalCents <= 0) return toast("O total da venda deve ser maior que zero.");
+  const normalizedPrimary = normalizePaymentMethod(primaryMethod);
+  const secondaryDefault = paymentOptions.find(([method]) => method !== normalizedPrimary)?.[0] || "PIX";
+  const modalRoot = document.querySelector("#modalRoot");
+
+  modalRoot.innerHTML = `
+    <div class="modal-backdrop">
+      <section class="modal split-payment-modal" role="dialog" aria-modal="true" aria-labelledby="splitPaymentTitle">
+        <header>
+          <h2 id="splitPaymentTitle">Dividir pagamento</h2>
+          <button class="icon-btn" type="button" data-split-cancel aria-label="Fechar">${icon("close")}</button>
+        </header>
+        <form id="splitPaymentForm" novalidate>
+          <div class="split-payment-total">
+            <span>Total da compra</span>
+            <strong>${money.format(finalCents / 100)}</strong>
+          </div>
+          <div class="split-payment-grid">
+            <fieldset class="split-payment-card">
+              <legend>Pagamento 1</legend>
+              ${input("firstAmount", "Valor", "", "number")}
+              ${select("firstMethod", "Forma de pagamento", paymentOptions, normalizedPrimary)}
+            </fieldset>
+            <fieldset class="split-payment-card">
+              <legend>Pagamento 2</legend>
+              ${input("secondAmount", "Valor", "", "number")}
+              ${select("secondMethod", "Forma de pagamento", paymentOptions, secondaryDefault)}
+            </fieldset>
+          </div>
+          <div class="split-payment-summary" aria-live="polite">
+            <span>Informado <strong data-split-informed>${money.format(0)}</strong></span>
+            <span data-split-balance>Restante <strong>${money.format(finalCents / 100)}</strong></span>
+          </div>
+          <p class="split-payment-message" data-split-message>Informe os dois valores para continuar.</p>
+          <footer>
+            <button class="btn secondary" type="button" data-split-cancel>Cancelar</button>
+            <button class="btn" type="submit" data-split-submit disabled>${icon("check")} CONFIRMAR VENDA</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  `;
+
+  const form = modalRoot.querySelector("#splitPaymentForm");
+  const firstAmount = form.elements.firstAmount;
+  const secondAmount = form.elements.secondAmount;
+  const firstMethod = form.elements.firstMethod;
+  const secondMethod = form.elements.secondMethod;
+  const submitButton = modalRoot.querySelector("[data-split-submit]");
+  const messageNode = modalRoot.querySelector("[data-split-message]");
+  const informedNode = modalRoot.querySelector("[data-split-informed]");
+  const balanceNode = modalRoot.querySelector("[data-split-balance]");
+  const cancelButtons = [...modalRoot.querySelectorAll("[data-split-cancel]")];
+  let secondAmountWasEdited = false;
+  let submitting = false;
+
+  const readValues = () => ({
+    firstCents: parseMoneyCents(firstAmount.value),
+    secondCents: parseMoneyCents(secondAmount.value),
+    firstPaymentMethod: normalizePaymentMethod(firstMethod.value),
+    secondPaymentMethod: normalizePaymentMethod(secondMethod.value),
+  });
+
+  const updateSummary = () => {
+    const values = readValues();
+    const informedCents = Math.max(0, values.firstCents || 0) + Math.max(0, values.secondCents || 0);
+    const differenceCents = finalCents - informedCents;
+    const validationMessage = splitPaymentValidation(
+      values.firstPaymentMethod,
+      values.firstCents,
+      values.secondPaymentMethod,
+      values.secondCents,
+      finalCents
+    );
+    informedNode.textContent = money.format(informedCents / 100);
+    balanceNode.innerHTML = differenceCents >= 0
+      ? `Restante <strong>${money.format(differenceCents / 100)}</strong>`
+      : `Excedente <strong>${money.format(Math.abs(differenceCents) / 100)}</strong>`;
+    balanceNode.classList.toggle("is-ok", !validationMessage);
+    balanceNode.classList.toggle("is-error", Boolean(validationMessage));
+    messageNode.textContent = validationMessage || "Valores conferidos. A venda pode ser finalizada.";
+    messageNode.classList.toggle("is-ok", !validationMessage);
+    submitButton.disabled = submitting || Boolean(validationMessage);
+    return { ...values, validationMessage };
+  };
+
+  firstAmount.addEventListener("input", () => {
+    const firstCents = parseMoneyCents(firstAmount.value);
+    if (!secondAmountWasEdited) {
+      secondAmount.value = firstCents != null && firstCents > 0 && firstCents < finalCents
+        ? formatMoneyCentsInput(finalCents - firstCents)
+        : "";
+    }
+    updateSummary();
+  });
+  secondAmount.addEventListener("input", () => {
+    secondAmountWasEdited = true;
+    updateSummary();
+  });
+  firstMethod.addEventListener("change", updateSummary);
+  secondMethod.addEventListener("change", updateSummary);
+  cancelButtons.forEach((button) => button.addEventListener("click", () => {
+    if (!submitting) closeModal();
+  }));
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submitting) return;
+    const values = updateSummary();
+    if (values.validationMessage) return;
+
+    submitting = true;
+    [...form.elements].forEach((element) => { element.disabled = true; });
+    cancelButtons.forEach((button) => { button.disabled = true; });
+    submitButton.innerHTML = `${icon("hourglass_top")} FINALIZANDO...`;
+    try {
+      const result = await checkout([
+        { method: values.firstPaymentMethod, amountCents: values.firstCents },
+        { method: values.secondPaymentMethod, amountCents: values.secondCents },
+      ]);
+      showCompletedCheckout(result);
+    } catch (error) {
+      handleCheckoutError(error, false);
+      submitting = false;
+      [...form.elements].forEach((element) => { element.disabled = false; });
+      cancelButtons.forEach((button) => { button.disabled = false; });
+      submitButton.innerHTML = `${icon("check")} CONFIRMAR VENDA`;
+      updateSummary();
+      messageNode.textContent = error.message || "Falha ao finalizar a venda.";
+      messageNode.classList.remove("is-ok");
+    }
+  });
+
+  updateSummary();
+  firstAmount.focus();
+}
+
+function formatCompanyIdentifier(value) {
+  const original = String(value || "").trim();
+  const digits = original.replace(/\D/g, "");
+  if (digits.length === 14) {
+    return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+  }
+  if (digits.length === 11) {
+    return digits.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
+  }
+  return original;
+}
+
+function formatReceiptQuantity(value) {
+  const quantity = Number(value) || 0;
+  return quantity.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+}
+
+function buildSaleReceiptText(result) {
+  const { sale, receiptItems, payments } = result;
+  const company = state.company || {};
+  const { socialMedia = "", receiptMessage = "", exchangePolicy = "" } = state.receiptSettings || {};
+  const identifier = formatCompanyIdentifier(company.identifier || company.identifierNormalized);
+  const lines = [
+    company.name || "GO REGISTER",
+    identifier ? `CPF/CNPJ: ${identifier}` : "",
+    company.address || "",
+    company.phone ? `Telefone: ${company.phone}` : "",
+    socialMedia ? `Redes sociais: ${socialMedia}` : "",
+    "",
+    "COMPROVANTE DE VENDA",
+    `Venda #${sale.id}`,
+    dateTime.format(new Date(sale.timestamp)),
+    "",
+    ...receiptItems.map((item) => `${formatReceiptQuantity(item.quantity)}x ${item.name} - ${money.format(item.subtotalCents / 100)}`),
+    sale.discount > 0 ? `Desconto: - ${money.format(sale.discount)}` : "",
+    "",
+    "Pagamentos:",
+    ...payments.map((part) => `${paymentMethodLabel(part.method)}: ${money.format(part.amountCents / 100)}`),
+    `TOTAL: ${money.format(sale.finalAmount)}`,
+    receiptMessage ? `\n${receiptMessage}` : "",
+    exchangePolicy ? `Política de troca: ${exchangePolicy}` : "",
+  ];
+  return lines.filter((line, index) => line !== "" || lines[index - 1] !== "").join("\n").trim();
+}
+
+async function shareSaleReceipt(result) {
+  const text = buildSaleReceiptText(result);
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: `Comprovante da venda #${result.sale.id}`, text });
+      return;
+    }
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      toast("Comprovante copiado.");
+      return;
+    }
+    throw new Error("Compartilhamento indisponivel neste navegador.");
+  } catch (error) {
+    if (error?.name !== "AbortError") toast(error.message || "Nao foi possivel compartilhar o comprovante.");
+  }
+}
+
+function openSaleReceipt(result) {
+  const { sale, receiptItems, payments } = result;
+  const company = state.company || {};
+  const { socialMedia = "", receiptMessage = "", exchangePolicy = "" } = state.receiptSettings || {};
+  const identifier = formatCompanyIdentifier(company.identifier || company.identifierNormalized);
+  const modalRoot = document.querySelector("#modalRoot");
+  modalRoot.innerHTML = `
+    <div class="modal-backdrop">
+      <section class="modal receipt-modal" role="dialog" aria-modal="true" aria-labelledby="saleReceiptTitle">
+        <header>
+          <div><span class="receipt-success">${icon("check_circle")} VENDA FINALIZADA!</span><h2 id="saleReceiptTitle">Comprovante de Venda</h2></div>
+          <button class="icon-btn" type="button" data-close-receipt aria-label="Fechar">${icon("close")}</button>
+        </header>
+        <div class="receipt-paper">
+          <div class="receipt-company">
+            <strong>${escapeHtml(company.name || "GO REGISTER")}</strong>
+            ${identifier ? `<span>CPF/CNPJ: ${escapeHtml(identifier)}</span>` : ""}
+            ${company.address ? `<span>${escapeHtml(company.address)}</span>` : ""}
+            ${company.phone ? `<span>Telefone: ${escapeHtml(company.phone)}</span>` : ""}
+            ${socialMedia ? `<span>Redes sociais: ${escapeHtml(socialMedia)}</span>` : ""}
+          </div>
+          <div class="receipt-meta"><span>Venda #${escapeHtml(sale.id)}</span><span>${escapeHtml(dateTime.format(new Date(sale.timestamp)))}</span></div>
+          <div class="receipt-items">
+            ${receiptItems.map((item) => `
+              <div class="receipt-item">
+                <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(formatReceiptQuantity(item.quantity))} x ${escapeHtml(money.format(item.unitPriceCents / 100))}</small></span>
+                <strong>${escapeHtml(money.format(item.subtotalCents / 100))}</strong>
+              </div>
+            `).join("")}
+          </div>
+          ${sale.discount > 0 ? `<div class="receipt-line"><span>Desconto</span><strong>- ${escapeHtml(money.format(sale.discount))}</strong></div>` : ""}
+          <div class="receipt-payments">
+            <strong>Pagamentos</strong>
+            ${payments.map((part) => `<div class="receipt-line"><span>${escapeHtml(paymentMethodLabel(part.method))}</span><strong>${escapeHtml(money.format(part.amountCents / 100))}</strong></div>`).join("")}
+          </div>
+          <div class="receipt-total"><span>TOTAL</span><strong>${escapeHtml(money.format(sale.finalAmount))}</strong></div>
+          ${receiptMessage || exchangePolicy ? `
+            <div class="receipt-company" style="border-top: 1px dashed var(--line); padding-top: 14px; text-align: left; overflow-wrap: anywhere; white-space: pre-line;">
+              ${receiptMessage ? `<span>${escapeHtml(receiptMessage)}</span>` : ""}
+              ${exchangePolicy ? `<span><b>Política de troca:</b> ${escapeHtml(exchangePolicy)}</span>` : ""}
+            </div>
+          ` : ""}
+        </div>
         <footer class="receipt-actions">
-          <button class="btn secondary" type="button" data-close-receipt>${icon("close")} Fechar</button>
-          <button class="btn secondary" type="button" data-print-receipt>${icon("print")} Imprimir</button>
-          <button class="btn" type="button" data-share-receipt>${icon("share")} Compartilhar</button>
+          <button class="btn secondary" type="button" data-share-receipt>${icon("share")} Compartilhar</button>
+          <button class="btn" type="button" data-close-receipt>Fechar</button>
         </footer>
       </section>
     </div>
   `;
-  document.querySelectorAll("[data-close-receipt]").forEach((button) => button.addEventListener("click", closeModal));
-  document.querySelector("[data-print-receipt]").addEventListener("click", () => {
-    document.body.classList.add("receipt-printing");
-    window.addEventListener("afterprint", () => document.body.classList.remove("receipt-printing"), { once: true });
-    window.print();
-    setTimeout(() => document.body.classList.remove("receipt-printing"), 1000);
-  });
-  document.querySelector("[data-share-receipt]").addEventListener("click", async () => {
-    const text = receiptText(sale, items, company);
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: `Comprovante de venda #${sale.id ?? sale.docId}`, text });
-        return;
-      }
-      await copyText(text);
-      toast("Comprovante copiado.");
-    } catch (error) {
-      if (error?.name !== "AbortError") toast("Não foi possível compartilhar o comprovante.");
-    }
-  });
+  const closeReceipt = () => {
+    closeModal();
+    renderApp();
+  };
+  modalRoot.querySelectorAll("[data-close-receipt]").forEach((button) => button.addEventListener("click", closeReceipt));
+  modalRoot.querySelector("[data-share-receipt]").addEventListener("click", () => shareSaleReceipt(result));
+}
+
+function handleCheckoutError(error, showToast = true) {
+  const message = error?.message || "Falha ao finalizar a venda.";
+  if (/firebase|firestore|permission|network|offline/i.test(message)) state.firebaseError = message;
+  if (showToast) toast(message);
+}
+
+function showCompletedCheckout(result) {
+  state.firebaseError = "";
+  renderApp();
+  openSaleReceipt(result);
+  toast("Venda finalizada.");
 }
 
 async function cancelTransaction(kind, id) {
@@ -2693,52 +3285,66 @@ async function cancelTransaction(kind, id) {
   }, "Transacao cancelada.");
 }
 
-async function checkout(paymentMethod) {
-  const open = currentOpenRegister();
-  if (!open || !state.cart.length) return;
-  const id = nextId(state.data.sales.map((item) => saleData(item)));
-  const total = state.cart.reduce((sum, item) => sum + item.product.sellingPrice * item.quantity, 0);
-  const discount = Math.min(Math.max(0, parseDecimal(state.discount)), total);
-  const sale = {
-    id,
-    timestamp: Date.now(),
-    totalAmount: total,
-    discount,
-    finalAmount: total - discount,
-    paymentMethod,
-    userId: Number(state.user.id) || 0,
-    cashRegisterId: Number(open.id) || 0,
-    isCancelled: false,
-  };
-  const receiptItems = state.cart.map((item) => ({
-    productName: String(item.product.name || "Produto"),
+async function checkout(paymentParts) {
+  if (checkoutInProgress) throw new Error("A venda ja esta sendo finalizada.");
+  checkoutInProgress = true;
+  const cartSnapshot = state.cart.map((item) => ({
+    product: { ...item.product },
     quantity: Number(item.quantity) || 0,
-    unitPrice: Number(item.product.sellingPrice) || 0,
-    subtotal: (Number(item.product.sellingPrice) || 0) * (Number(item.quantity) || 0),
   }));
-  const items = state.cart.map((item, index) => ({
-    id: id * 1000 + index + 1,
-    saleId: id,
-    productId: Number(item.product.id),
-    productName: String(item.product.name || "Produto"),
-    quantity: item.quantity,
-    tracksStock: productTracksStock(item.product),
-    unitPrice: Number(item.product.sellingPrice) || 0,
-    subtotal: (Number(item.product.sellingPrice) || 0) * item.quantity,
-  }));
-  await setDoc(tenantDocument(collections.sales, id), tenantPayload({ sale: { ...sale, empresa_id: tenantId() }, items }));
-  await Promise.all(state.cart.filter((item) => productTracksStock(item.product)).map((item) => {
-    const updatedStock = Math.max(0, (Number(item.product.stockQuantity) || 0) - item.quantity);
-    return Promise.all([
-      updateProductStock(item.product.id, updatedStock),
-      saveStockMovement(item.product.id, -item.quantity, "EXIT", `Venda #${id}`),
-    ]);
-  }));
-  state.cart = [];
-  state.discount = 0;
-  toast("Venda finalizada.");
-  renderApp();
-  return () => openReceiptModal(sale, receiptItems);
+
+  try {
+    const open = currentOpenRegister();
+    if (!open) throw new Error("O caixa foi fechado. Abra o caixa antes de finalizar a venda.");
+    if (!cartSnapshot.length) throw new Error("O carrinho esta vazio.");
+
+    const { totalCents, discountCents, finalCents } = cartTotals(cartSnapshot);
+    const payments = normalizeCheckoutPayments(paymentParts, finalCents);
+    const id = nextId(state.data.sales.map((item) => saleData(item)));
+    const sale = {
+      id,
+      timestamp: Date.now(),
+      totalAmount: totalCents / 100,
+      discount: discountCents / 100,
+      finalAmount: finalCents / 100,
+      paymentMethod: payments[0].method,
+      secondaryPaymentMethod: payments[1]?.method || null,
+      secondaryPaymentAmount: payments[1] ? payments[1].amountCents / 100 : 0,
+      userId: Number(state.user.id) || 0,
+      cashRegisterId: Number(open.id) || 0,
+      isCancelled: false,
+    };
+    const items = cartSnapshot.map((item, index) => ({
+      id: id * 1000 + index + 1,
+      saleId: id,
+      productId: Number(item.product.id),
+      quantity: item.quantity,
+      tracksStock: productTracksStock(item.product),
+      unitPrice: Math.round((Number(item.product.sellingPrice) || 0) * 100) / 100,
+      subtotal: Math.round((Number(item.product.sellingPrice) || 0) * item.quantity * 100) / 100,
+    }));
+    const receiptItems = cartSnapshot.map((item) => ({
+      name: item.product.name || "Produto",
+      quantity: item.quantity,
+      unitPriceCents: Math.round((Number(item.product.sellingPrice) || 0) * 100),
+      subtotalCents: Math.round((Number(item.product.sellingPrice) || 0) * item.quantity * 100),
+    }));
+
+    await setDoc(tenantDocument(collections.sales, id), tenantPayload({ sale: { ...sale, empresa_id: tenantId() }, items }));
+    await Promise.all(cartSnapshot.filter((item) => productTracksStock(item.product)).map((item) => {
+      const updatedStock = Math.max(0, (Number(item.product.stockQuantity) || 0) - item.quantity);
+      return Promise.all([
+        updateProductStock(item.product.id, updatedStock),
+        saveStockMovement(item.product.id, -item.quantity, "EXIT", `Venda #${id}`),
+      ]);
+    }));
+
+    state.cart = [];
+    state.discount = 0;
+    return { sale, items, receiptItems, payments };
+  } finally {
+    checkoutInProgress = false;
+  }
 }
 
 async function updateProductStock(productId, stockQuantity) {
@@ -2807,6 +3413,15 @@ async function init() {
       state.loading = true;
       renderApp();
       subscribe();
+      const authenticatedCompanyId = tenantId();
+      const authenticatedUserKey = sessionUserKey(state.user);
+      const protectedLoaders = [loadReceiptSettings()];
+      if (isPrivilegedRole(state.user.role)) protectedLoaders.push(loadOfficialCompanyProfile());
+      else state.companyProfile = null;
+      await Promise.all(protectedLoaders);
+      if (!state.user || tenantId() !== authenticatedCompanyId) return;
+      if (sessionUserKey(state.user) !== authenticatedUserKey) return;
+      if (state.user) renderApp();
     } catch (error) {
       await signOut(auth);
       renderUserLogin(error.message || "Acesso negado.");

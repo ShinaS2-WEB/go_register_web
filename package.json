@@ -2,6 +2,7 @@
   "name": "go-register-web-tests",
   "private": true,
   "scripts": {
+    "start": "node scripts/serve.js",
     "test": "npm --prefix functions test",
     "test:rules": "node --test tests/firestore.rules.test.js",
     "test:emulator": "node --test --test-concurrency=1 tests/*.test.js",
