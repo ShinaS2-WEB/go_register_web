@@ -120,6 +120,13 @@ const adminRoutes = new Set(["inventory", "stockHistory", "cashHistory", "catego
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const dateTime = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
 const dateOnly = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium" });
+const receiptDate = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" });
+const receiptTime = new Intl.DateTimeFormat("pt-BR", { timeStyle: "short" });
+
+function formatReceiptDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return `${receiptDate.format(date)} H ${receiptTime.format(date)}`;
+}
 
 const paymentLabels = {
   CASH: "Dinheiro",
@@ -1614,7 +1621,7 @@ function reportConsolidatedRows(sales, financialMovements, manualStockEntries) {
     amount: null,
     amountClass: "plus",
   }));
-  return [...saleRows, ...movementRows, ...stockRows].sort((a, b) => a.timestamp - b.timestamp);
+  return [...saleRows, ...movementRows, ...stockRows].sort((a, b) => b.timestamp - a.timestamp);
 }
 
 function renderReports() {
@@ -1701,9 +1708,9 @@ function renderReports() {
             <small>${manualSaleCount} venda${manualSaleCount === 1 ? "" : "s"} sem baixa</small>
           </article>
           <article class="report-kpi report-kpi--exits">
-            <span>Vendas do estoque</span>
-            <strong>${money.format(paymentTotals.stock)}</strong>
-            <small>${sales.length} venda${sales.length === 1 ? "" : "s"} com baixa</small>
+            <span>Vendas no cartão</span>
+            <strong>${money.format(paymentTotals.card)}</strong>
+            <small>Total recebido em cartão</small>
           </article>
           <article class="report-kpi report-kpi--stock">
             <span>Pix</span>
@@ -3196,7 +3203,7 @@ function buildSaleReceiptText(result) {
     socialMedia ? `Redes sociais: ${socialMedia}` : "",
     "",
     "COMPROVANTE DE VENDA",
-    dateTime.format(new Date(sale.timestamp)),
+    formatReceiptDateTime(sale.timestamp),
     "",
     ...receiptItems.map((item) => `${formatReceiptQuantity(item.quantity)}x ${item.name} - ${money.format(item.subtotalCents / 100)}`),
     sale.discount > 0 ? `Desconto: - ${money.format(sale.discount)}` : "",
@@ -3280,7 +3287,7 @@ function openSaleReceipt(result) {
             ${company.phone ? `<span>Telefone: ${escapeHtml(company.phone)}</span>` : ""}
             ${socialMedia ? `<span>Redes sociais: ${escapeHtml(socialMedia)}</span>` : ""}
           </div>
-          <div class="receipt-meta"><span>${escapeHtml(dateTime.format(new Date(sale.timestamp)))}</span></div>
+          <div class="receipt-meta"><span>${escapeHtml(formatReceiptDateTime(sale.timestamp))}</span></div>
           <div class="receipt-items">
             ${receiptItems.map((item) => `
               <div class="receipt-item">
