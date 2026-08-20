@@ -1739,11 +1739,6 @@ function renderReceivables() {
           <div><strong>Adicional vencido ou suspenso</strong><br><span>O histórico permanece disponível e você pode receber contas existentes, mas não pode cadastrar novos clientes ou novas contas.</span></div>
         </div>
       `}
-      <div class="notice receivables-scope-notice">
-        ${icon("info")}
-        <div><strong>Controle manual de dívidas</strong><br><span>Este módulo não cria uma venda e não movimenta o caixa. Quando um recebimento entrar no caixa, registre também uma Entrada Manual na tela Caixa.</span></div>
-      </div>
-
       <div class="grid receivables-metrics">
         <article class="panel metric primary"><span>Total a receber</span><strong>${money.format(summary.outstandingAmountCents / 100)}</strong><small>${state.receivables.receivables.filter((item) => ["OPEN", "PARTIAL", "OVERDUE"].includes(receivableDisplayStatus(item))).length} conta(s) pendente(s)</small></article>
         <article class="panel metric tertiary"><span>Total atrasado</span><strong>${money.format(summary.overdueAmountCents / 100)}</strong><small>Saldo com vencimento anterior a hoje</small></article>

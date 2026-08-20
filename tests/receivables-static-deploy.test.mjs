@@ -90,3 +90,12 @@ test("modal bloqueia fechamento enquanto o envio esta em andamento", async () =>
   assert.match(modalSource, /closeButtons\.forEach\(\(button\) => \{ button\.disabled = true; \}\)/);
   assert.match(modalSource, /#modalForm\[data-submitting='true'\]/);
 });
+
+test("pagina de contas nao exibe o aviso permanente de controle manual", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf("function renderReceivables()");
+  const end = app.indexOf("function reportSales", start);
+  const receivablesPageSource = app.slice(start, end);
+  assert.doesNotMatch(receivablesPageSource, /Controle manual de dívidas/);
+  assert.doesNotMatch(receivablesPageSource, /registre também uma Entrada Manual/);
+});
