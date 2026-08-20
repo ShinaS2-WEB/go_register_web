@@ -82,6 +82,10 @@ test("modal bloqueia fechamento enquanto o envio esta em andamento", async () =>
   const start = app.indexOf("function openModal(");
   const end = app.indexOf("function openFormDialog", start);
   const modalSource = app.slice(start, end);
+  const afterSubmitAwait = modalSource.slice(modalSource.indexOf("await onSubmit"));
+  assert.match(modalSource, /const formElement = event\.currentTarget/);
+  assert.match(modalSource, /new FormData\(formElement\)/);
+  assert.doesNotMatch(afterSubmitAwait, /event\.currentTarget/);
   assert.match(modalSource, /dataset\.submitting = "true"/);
   assert.match(modalSource, /closeButtons\.forEach\(\(button\) => \{ button\.disabled = true; \}\)/);
   assert.match(modalSource, /#modalForm\[data-submitting='true'\]/);
