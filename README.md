@@ -15,6 +15,7 @@ O projeto funciona direto no navegador e usa Firebase/Firestore para sincronizar
 - Relatorios com filtros por periodo, dia especifico e mes.
 - Exportacao de relatorios em PDF, inventario em CSV e backup em JSON.
 - Gerenciamento de usuarios com perfis de operador, administrador e administrador mestre.
+- Modulo opcional de clientes e contas a receber, liberado individualmente por empresa.
 - Tema claro, escuro e variacoes visuais configuraveis.
 
 ## Tecnologias
@@ -56,6 +57,19 @@ firebase deploy --only firestore:rules
 O GitHub Pages publica apenas HTML, CSS, JavaScript e imagens. Ele não publica as
 regras do Firestore automaticamente. Sem essa etapa, o cadastro complementar e
 os relatórios com os novos dados serão bloqueados pelo Firebase.
+
+### Adicional de Contas a Receber
+
+O painel administrativo pode liberar o adicional para cada empresa como teste,
+plano ativo, em atraso ou suspenso. Empresas nunca provisionadas não veem o
+menu. Quando um plano já existente é suspenso ou vence, o histórico e o
+recebimento das dívidas antigas continuam disponíveis, mas novos cadastros são
+bloqueados.
+
+O módulo funciona no plano Spark: ele usa transações do Firestore e não depende
+de Cloud Functions. O recebimento reduz somente a dívida e não cria venda nem
+entrada de caixa automaticamente. Consulte `MODULO_CONTAS_RECEBER.md` para a
+ordem de publicação e os testes obrigatórios.
 
 ## Primeiros Passos
 

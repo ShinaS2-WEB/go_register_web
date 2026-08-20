@@ -24,12 +24,15 @@ jobs:
       - name: Baixar repositório
         uses: actions/checkout@v6
 
+      - name: Validar módulo de Contas a Receber
+        run: npm run test:receivables
+
       - name: Preparar arquivos públicos
         run: |
           mkdir -p _site/assets _site/admin
-          cp index.html app.js styles.css _site/
+          cp index.html app.js receivables-core.mjs styles.css _site/
           cp -R assets/. _site/assets/
-          cp -R admin/. _site/admin/
+          cp admin/index.html admin/admin.js admin/admin.css admin/notifications.css _site/admin/
           touch _site/.nojekyll
 
       - name: Configurar GitHub Pages

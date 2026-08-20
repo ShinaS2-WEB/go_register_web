@@ -3,10 +3,12 @@
   "private": true,
   "scripts": {
     "start": "node scripts/serve.js",
-    "test": "npm --prefix functions test",
+    "test": "npm run test:functions && npm run test:receivables",
+    "test:functions": "node --test functions/tests/validation.test.js",
+    "test:receivables": "node --test tests/*.test.mjs admin/tests/*.test.cjs",
     "test:rules": "node --test tests/firestore.rules.test.js",
-    "test:emulator": "node --test --test-concurrency=1 tests/*.test.js",
-    "emulators:test": "firebase emulators:exec --only firestore,auth \"npm run test:emulator\"",
+    "test:emulator": "node --test --test-concurrency=1 tests/firestore.rules.test.js",
+    "emulators:test": "firebase emulators:exec --only firestore \"npm run test:emulator\"",
     "migrate:dry-run": "node scripts/firestore-migrate.js",
     "migrate:apply": "node scripts/firestore-migrate.js --apply --backup-confirmed"
   },

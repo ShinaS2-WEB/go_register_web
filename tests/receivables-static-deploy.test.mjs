@@ -1,0 +1,88 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("pagina publica entrega o modulo e invalida caches antigos", async () => {
+  const [index, app, workflow, firebaseJson, packageJson, firebaseWorkflow, localServer] = await Promise.all([
+    readFile(path.join(root, "index.html"), "utf8"),
+    readFile(path.join(root, "app.js"), "utf8"),
+    readFile(path.join(root, ".github", "workflows", "pages.yml"), "utf8"),
+    readFile(path.join(root, "firebase.json"), "utf8"),
+    readFile(path.join(root, "package.json"), "utf8"),
+    readFile(path.join(root, ".github", "workflows", "firebase-deploy.yml"), "utf8"),
+    readFile(path.join(root, "scripts", "serve.js"), "utf8"),
+  ]);
+  assert.match(index, /styles\.css\?v=accounts-receivable-v1/);
+  assert.match(index, /app\.js\?v=accounts-receivable-v1/);
+  assert.match(index, /script-src 'self'/);
+  assert.match(app, /\.\/receivables-core\.mjs\?v=accounts-receivable-v1/);
+  assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
+  assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/admin\.css admin\/notifications\.css _site\/admin\//);
+  assert.doesNotMatch(workflow, /cp -R admin/);
+  assert.match(workflow, /npm run test:receivables/);
+  assert.ok(JSON.parse(firebaseJson).hosting.ignore.includes("**/tests/**"));
+  const scripts = JSON.parse(packageJson).scripts;
+  assert.equal(scripts.test, "npm run test:functions && npm run test:receivables");
+  assert.equal(scripts["test:functions"], "node --test functions/tests/validation.test.js");
+  assert.equal(scripts["test:receivables"], "node --test tests/*.test.mjs admin/tests/*.test.cjs");
+  assert.equal(scripts["test:emulator"], "node --test --test-concurrency=1 tests/firestore.rules.test.js");
+  assert.equal(scripts["emulators:test"], "firebase emulators:exec --only firestore \"npm run test:emulator\"");
+  assert.match(firebaseWorkflow, /run: npm test/);
+  assert.match(firebaseWorkflow, /run: npm run emulators:test/);
+  assert.match(localServer, /"\.mjs": "text\/javascript; charset=utf-8"/);
+});
+
+test("backup operacional inclui o modulo sem dados de cobranca do plano", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf("function exportBackupJson()");
+  const end = app.indexOf("function dateStamp()", start);
+  const backupSource = app.slice(start, end);
+  assert.match(backupSource, /schemaVersion: 2/);
+  assert.match(backupSource, /customers: state\.receivables\.customers/);
+  assert.match(backupSource, /receivables: state\.receivables\.receivables/);
+  assert.match(backupSource, /receivable_payments: state\.receivables\.payments/);
+  assert.doesNotMatch(backupSource, /billing|planPrice|monthlyPrice|subscriptionPrice/i);
+});
+
+test("fluxo de recebimento nao grava entrada financeira nem venda", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf("function openReceivablePaymentModal");
+  const end = app.indexOf("function openReceivablePaymentHistory", start);
+  const paymentSource = app.slice(start, end);
+  assert.match(paymentSource, /runTransaction/);
+  assert.match(paymentSource, /receivable_payments|receivablesCollections\.payments/);
+  assert.match(paymentSource, /pendingReceivablePayments\.has\(receivableId\)/);
+  assert.match(paymentSource, /getOrCreateReceivablePaymentRetry\(companyId, receivableId, fingerprint\)/);
+  assert.match(paymentSource, /clearReceivablePaymentRetry\(operation\.scope, paymentId\)/);
+  assert.match(app, /O navegador bloqueou o armazenamento seguro da tentativa/);
+  assert.match(paymentSource, /const timestamp = Math\.max\(/);
+  assert.doesNotMatch(paymentSource, /financial_entries|collections\.entries|collections\.sales/);
+});
+
+test("backup aguarda entitlement e snapshots completos", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf("function exportBackupJson()");
+  const end = app.indexOf("function dateStamp()", start);
+  const backupSource = app.slice(start, end);
+  assert.match(backupSource, /!state\.receivablesEntitlementLoaded/);
+  assert.match(backupSource, /!receivablesDataReady\(\)/);
+  assert.match(backupSource, /state\.receivables\.errors\.size > 0/);
+  assert.match(
+    backupSource,
+    /if \(state\.receivables\.errors\.size > 0\)[\s\S]*if \(state\.receivablesEntitlement && !receivablesDataReady\(\)\)/,
+  );
+});
+
+test("modal bloqueia fechamento enquanto o envio esta em andamento", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf("function openModal(");
+  const end = app.indexOf("function openFormDialog", start);
+  const modalSource = app.slice(start, end);
+  assert.match(modalSource, /dataset\.submitting = "true"/);
+  assert.match(modalSource, /closeButtons\.forEach\(\(button\) => \{ button\.disabled = true; \}\)/);
+  assert.match(modalSource, /#modalForm\[data-submitting='true'\]/);
+});
