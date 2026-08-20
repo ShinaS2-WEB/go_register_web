@@ -10,7 +10,9 @@ service cloud.firestore {
     }
     function activeCompany(companyId) {
       return exists(/databases/$(database)/documents/companies/$(companyId))
-        && get(/databases/$(database)/documents/companies/$(companyId)).data.isActive == true;
+        && get(/databases/$(database)/documents/companies/$(companyId)).data.isActive == true
+        && (!('dataDeletionInProgress' in get(/databases/$(database)/documents/companies/$(companyId)).data)
+          || get(/databases/$(database)/documents/companies/$(companyId)).data.dataDeletionInProgress != true);
     }
     function companyProfile(companyId) {
       return get(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid)).data;
@@ -26,6 +28,228 @@ service cloud.firestore {
     }
     function belongsToCompany(data, companyId) {
       return !('empresa_id' in data) || data.empresa_id == companyId;
+    }
+    function receivablesEntitlementPath(companyId) {
+      return /databases/$(database)/documents/companies/$(companyId)/entitlements/accounts_receivable;
+    }
+    function receivablesProvisioned(companyId) {
+      return exists(receivablesEntitlementPath(companyId));
+    }
+    function receivablesCreationEnabled(companyId) {
+      return receivablesProvisioned(companyId)
+        && get(receivablesEntitlementPath(companyId)).data.enabled == true
+        && get(receivablesEntitlementPath(companyId)).data.status in ['ACTIVE', 'TRIAL']
+        && (get(receivablesEntitlementPath(companyId)).data.validUntil == null
+          || get(receivablesEntitlementPath(companyId)).data.validUntil >= request.time.toMillis());
+    }
+    function validEntitlement(data) {
+      return data.keys().hasOnly(['enabled', 'status', 'validUntil', 'updatedAt', 'updatedByUid'])
+        && data.enabled is bool
+        && data.status is string
+        && data.status in ['TRIAL', 'ACTIVE', 'PAST_DUE', 'SUSPENDED']
+        && (data.validUntil == null || (data.validUntil is int && data.validUntil >= 0))
+        && data.updatedAt is int
+        && data.updatedAt >= 0
+        && boundedUid(data.updatedByUid)
+        && data.updatedByUid == request.auth.uid;
+    }
+    function validBilling(data) {
+      return data.keys().hasOnly(['priceCents', 'billingCycle', 'nextDueAt', 'notes',
+          'updatedAt', 'updatedByUid'])
+        && data.priceCents is int
+        && data.priceCents >= 0
+        && data.priceCents <= 99999999999
+        && data.billingCycle is string
+        && data.billingCycle in ['MONTHLY', 'YEARLY', 'ONE_TIME']
+        && (data.nextDueAt == null || (data.nextDueAt is int && data.nextDueAt >= 0))
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.updatedAt is int
+        && data.updatedAt >= 0
+        && boundedUid(data.updatedByUid)
+        && data.updatedByUid == request.auth.uid;
+    }
+    function boundedDocumentId(value) {
+      return value is string
+        && value.size() > 0
+        && value.size() <= 64;
+    }
+    function boundedUid(value) {
+      return value is string
+        && value.size() > 0
+        && value.size() <= 128;
+    }
+    function boundedPositiveMoneyCents(value) {
+      return value is int
+        && value > 0
+        && value <= 99999999999;
+    }
+    function strictTenant(data, companyId) {
+      return boundedDocumentId(companyId)
+        && boundedDocumentId(data.empresa_id)
+        && data.empresa_id == companyId
+        && boundedDocumentId(data.companyId)
+        && data.companyId == companyId;
+    }
+    function recentClientTimestamp(value) {
+      return value is int
+        && value >= request.time.toMillis() - 86400000
+        && value <= request.time.toMillis() + 300000;
+    }
+    function currentPaymentTimestamp(value) {
+      return value is int
+        && value >= request.time.toMillis() - 300000
+        && value <= request.time.toMillis() + 300000;
+    }
+    function validCustomer(data, companyId, customerId) {
+      return data.keys().hasOnly(['id', 'name', 'phone', 'document', 'notes', 'isActive',
+          'createdAt', 'updatedAt', 'createdByUid', 'updatedByUid', 'empresa_id', 'companyId'])
+        && strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == customerId
+        && data.name is string
+        && data.name.size() >= 2
+        && data.name.size() <= 160
+        && data.phone is string
+        && data.phone.size() <= 32
+        && data.document is string
+        && data.document.size() <= 32
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.isActive is bool
+        && data.createdAt is int
+        && data.createdAt >= 0
+        && data.updatedAt is int
+        && data.updatedAt >= data.createdAt
+        && data.updatedAt <= request.time.toMillis() + 300000
+        && boundedUid(data.createdByUid)
+        && boundedUid(data.updatedByUid);
+    }
+    function validReceivable(data, companyId, receivableId) {
+      return data.keys().hasOnly(['id', 'customerId', 'customerName', 'description',
+          'originalAmountCents', 'outstandingAmountCents', 'createdAt', 'dueAt', 'status',
+          'lastPaymentId', 'lastPaymentAt', 'createdByUid', 'updatedAt', 'updatedByUid',
+          'empresa_id', 'companyId'])
+        && strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == receivableId
+        && boundedDocumentId(data.customerId)
+        && data.customerName is string
+        && data.customerName.size() >= 2
+        && data.customerName.size() <= 160
+        && data.description is string
+        && data.description.size() <= 500
+        && boundedPositiveMoneyCents(data.originalAmountCents)
+        && data.outstandingAmountCents is int
+        && data.outstandingAmountCents >= 0
+        && data.outstandingAmountCents <= data.originalAmountCents
+        && data.createdAt is int
+        && data.createdAt >= 0
+        && data.dueAt is int
+        && data.dueAt >= 0
+        && data.status is string
+        && data.status in ['OPEN', 'PARTIAL', 'PAID', 'CANCELLED']
+        && (data.lastPaymentId == '' || boundedDocumentId(data.lastPaymentId))
+        && data.lastPaymentAt is int
+        && data.lastPaymentAt >= 0
+        && boundedUid(data.createdByUid)
+        && data.updatedAt is int
+        && data.updatedAt >= data.createdAt
+        && data.updatedAt <= request.time.toMillis() + 300000
+        && boundedUid(data.updatedByUid)
+        && ((data.status == 'OPEN'
+            && data.outstandingAmountCents == data.originalAmountCents
+            && data.lastPaymentId == ''
+            && data.lastPaymentAt == 0)
+          || (data.status == 'PARTIAL'
+            && data.outstandingAmountCents > 0
+            && data.outstandingAmountCents < data.originalAmountCents
+            && data.lastPaymentId.size() > 0
+            && data.lastPaymentAt > 0)
+          || (data.status == 'PAID'
+            && data.outstandingAmountCents == 0
+            && data.lastPaymentId.size() > 0
+            && data.lastPaymentAt > 0)
+          || data.status == 'CANCELLED');
+    }
+    function validReceivableBeforePayment(data) {
+      return boundedPositiveMoneyCents(data.originalAmountCents)
+        && data.outstandingAmountCents is int
+        && data.outstandingAmountCents > 0
+        && data.outstandingAmountCents <= data.originalAmountCents
+        && data.lastPaymentAt is int
+        && ((data.status == 'OPEN'
+            && data.outstandingAmountCents == data.originalAmountCents
+            && data.lastPaymentId == ''
+            && data.lastPaymentAt == 0)
+          || (data.status == 'PARTIAL'
+            && data.outstandingAmountCents < data.originalAmountCents
+            && boundedDocumentId(data.lastPaymentId)
+            && data.lastPaymentAt > 0));
+    }
+    function validPayment(data, companyId, paymentId) {
+      return data.keys().hasOnly(['id', 'receivableId', 'customerId', 'amountCents',
+          'paymentMethod', 'timestamp', 'notes', 'createdByUid', 'empresa_id', 'companyId'])
+        && strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == paymentId
+        && boundedDocumentId(data.receivableId)
+        && boundedDocumentId(data.customerId)
+        && boundedPositiveMoneyCents(data.amountCents)
+        && data.paymentMethod is string
+        && data.paymentMethod in ['CASH', 'PIX', 'DEBIT_CARD', 'CREDIT_CARD']
+        && currentPaymentTimestamp(data.timestamp)
+        && data.notes is string
+        && data.notes.size() <= 500
+        && boundedUid(data.createdByUid)
+        && data.createdByUid == request.auth.uid;
+    }
+    function receivablePath(companyId, receivableId) {
+      return /databases/$(database)/documents/companies/$(companyId)/receivables/$(receivableId);
+    }
+    function paymentPath(companyId, paymentId) {
+      return /databases/$(database)/documents/companies/$(companyId)/receivable_payments/$(paymentId);
+    }
+    // O lote só é aceito se as duas escritas passarem. Valide o schema do pagamento
+    // aqui e o estado final da conta na atualização, evitando duplicar expressões.
+    function validPaymentCreate(companyId, paymentId) {
+      let payment = request.resource.data;
+      let linkedReceivable = receivablePath(companyId, payment.receivableId);
+      let before = get(linkedReceivable).data;
+      let after = getAfter(linkedReceivable).data;
+      return validPayment(payment, companyId, paymentId)
+        && exists(linkedReceivable)
+        && existsAfter(linkedReceivable)
+        && before.lastPaymentId != paymentId
+        && after.lastPaymentId == paymentId
+        && after.id == payment.receivableId;
+    }
+    // Esta metade exige um pagamento novo vinculado e aplica toda a transição de saldo.
+    function validReceivablePaymentUpdate(companyId, receivableId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let paymentId = after.lastPaymentId;
+      let linkedPayment = paymentPath(companyId, paymentId);
+      let payment = getAfter(linkedPayment).data;
+      return validReceivable(after, companyId, receivableId)
+        && after.diff(before).affectedKeys().hasOnly([
+           'outstandingAmountCents', 'status', 'lastPaymentId', 'lastPaymentAt',
+           'updatedAt', 'updatedByUid'])
+        && validReceivableBeforePayment(before)
+        && !exists(linkedPayment)
+        && existsAfter(linkedPayment)
+        && payment.receivableId == receivableId
+        && payment.customerId == before.customerId
+        && payment.amountCents <= before.outstandingAmountCents
+        && payment.timestamp >= before.createdAt
+        && payment.timestamp >= before.lastPaymentAt
+        && after.outstandingAmountCents == before.outstandingAmountCents - payment.amountCents
+        && after.lastPaymentAt == payment.timestamp
+        && after.updatedAt == payment.timestamp
+        && after.updatedAt >= before.updatedAt
+        && after.updatedByUid == request.auth.uid
+        && ((after.outstandingAmountCents == 0 && after.status == 'PAID')
+          || (after.outstandingAmountCents > 0 && after.status == 'PARTIAL'));
     }
     match /platform_admins/{uid} {
       allow read, create, update: if platformAdmin();
@@ -69,6 +293,83 @@ service cloud.firestore {
         allow read: if documentId == 'official'
           && (platformAdmin() || companyUser(companyId));
         allow create, update, delete: if documentId == 'official' && platformAdmin();
+      }
+
+      match /entitlements/{moduleId} {
+        allow read: if moduleId == 'accounts_receivable'
+          && (platformAdmin() || companyUser(companyId));
+        allow create, update: if moduleId == 'accounts_receivable'
+          && platformAdmin()
+          && validEntitlement(request.resource.data);
+        allow delete: if moduleId == 'accounts_receivable' && platformAdmin();
+      }
+
+      match /billing/{moduleId} {
+        allow read: if moduleId == 'accounts_receivable' && platformAdmin();
+        allow create, update: if moduleId == 'accounts_receivable'
+          && platformAdmin()
+          && validBilling(request.resource.data);
+        allow delete: if moduleId == 'accounts_receivable' && platformAdmin();
+      }
+
+      match /customers/{customerId} {
+        allow read: if platformAdmin()
+          || (companyUser(companyId) && receivablesProvisioned(companyId));
+        allow create: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesCreationEnabled(companyId)
+            && validCustomer(request.resource.data, companyId, customerId)
+            && recentClientTimestamp(request.resource.data.createdAt)
+            && request.resource.data.updatedAt == request.resource.data.createdAt
+            && request.resource.data.createdByUid == request.auth.uid
+            && request.resource.data.updatedByUid == request.auth.uid);
+        allow update: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesCreationEnabled(companyId)
+            && validCustomer(request.resource.data, companyId, customerId)
+            && request.resource.data.id == resource.data.id
+            && request.resource.data.empresa_id == resource.data.empresa_id
+            && request.resource.data.companyId == resource.data.companyId
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.createdByUid == resource.data.createdByUid
+            && request.resource.data.updatedAt >= resource.data.updatedAt
+            && recentClientTimestamp(request.resource.data.updatedAt)
+            && request.resource.data.updatedByUid == request.auth.uid);
+        allow delete: if platformAdmin();
+      }
+
+      match /receivables/{receivableId} {
+        allow read: if platformAdmin()
+          || (companyUser(companyId) && receivablesProvisioned(companyId));
+        allow create: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesCreationEnabled(companyId)
+            && validReceivable(request.resource.data, companyId, receivableId)
+            && recentClientTimestamp(request.resource.data.createdAt)
+            && request.resource.data.updatedAt == request.resource.data.createdAt
+            && request.resource.data.status == 'OPEN'
+            && request.resource.data.createdByUid == request.auth.uid
+            && request.resource.data.updatedByUid == request.auth.uid
+            && exists(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId))
+            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.empresa_id == companyId
+            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.companyId == companyId
+            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.isActive == true
+            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.name == request.resource.data.customerName);
+        allow update: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesProvisioned(companyId)
+            && validReceivablePaymentUpdate(companyId, receivableId));
+        allow delete: if platformAdmin();
+      }
+
+      match /receivable_payments/{paymentId} {
+        allow read: if platformAdmin()
+          || (companyUser(companyId) && receivablesProvisioned(companyId));
+        allow create: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesProvisioned(companyId)
+            && validPaymentCreate(companyId, paymentId));
+        allow update, delete: if platformAdmin();
       }
 
       match /{collectionName}/{documentId} {

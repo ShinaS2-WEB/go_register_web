@@ -6,7 +6,7 @@
       "**/.*",
       "**/node_modules/**",
       "scripts/**",
-      "tests/**",
+      "**/tests/**",
       "functions/**",
       "mobile/**",
       "arquivos_codex/**",

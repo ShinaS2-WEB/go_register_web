@@ -16,6 +16,18 @@ import {
   deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, reauthenticateWithCredential, EmailAuthProvider, updatePassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js";
+import {
+  applyReceivablePayment,
+  filterReceivables,
+  localDateInputToMillis,
+  matchesExistingPayment,
+  millisToLocalDateInput,
+  parseMoneyToCents,
+  receivableDisplayStatus,
+  receivablePaymentFingerprint,
+  receivablesEntitlementAccess,
+  receivablesSummary,
+} from "./receivables-core.mjs?v=accounts-receivable-v1";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDaNbVpvkGov4vtabbk-bAWOpb7nDpmzrA",
@@ -45,6 +57,12 @@ const collections = {
 };
 
 const ACTIVE_REGISTER_DOCUMENT = "active_register";
+const ACCOUNTS_RECEIVABLE_ENTITLEMENT = "accounts_receivable";
+const receivablesCollections = {
+  customers: "customers",
+  receivables: "receivables",
+  payments: "receivable_payments",
+};
 
 const themeOptions = [
   ["classic", "Classico"],
@@ -71,6 +89,8 @@ const state = {
   company: null,
   companyProfile: null,
   receiptSettings: null,
+  receivablesEntitlement: null,
+  receivablesEntitlementLoaded: false,
   authStage: "loading",
   view: "dashboard",
   theme: initialTheme(),
@@ -97,20 +117,36 @@ const state = {
     reportsPeriod: "all",
     reportsDate: new Date().toISOString().slice(0, 10),
     reportsMonth: new Date().getMonth(),
+    receivablesStatus: "OPEN",
+    receivablesSearch: "",
+  },
+  receivables: {
+    customers: [],
+    receivables: [],
+    payments: [],
+    loadedCollections: new Set(),
+    errors: new Map(),
   },
   discount: 0,
   loading: true,
   loadedCollections: new Set(),
+  collectionErrors: new Map(),
   firebaseError: "",
   lastSync: null,
 };
 let unsubscribers = [];
+let receivablesEntitlementUnsubscribe = null;
+let receivablesUnsubscribers = [];
+let receivablesSubscribedTenant = "";
+const pendingReceivablePayments = new Map();
+const RECEIVABLE_PAYMENT_RETRY_STORAGE_KEY = "goRegisterReceivablePaymentRetriesV1";
 let checkoutInProgress = false;
 
 const navItems = [
   ["dashboard", "Painel", "dashboard", "all"],
   ["pos", "Vendas", "point_of_sale", "all"],
   ["cash", "Caixa", "payments", "all"],
+  ["receivables", "Clientes e Contas", "request_quote", "receivables"],
   ["inventory", "Estoque", "inventory_2", "admin"],
   ["settings", "Ajustes", "settings", "all"],
 ];
@@ -309,6 +345,56 @@ function randomToken() {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function randomUuid() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
+function readReceivablePaymentRetries() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RECEIVABLE_PAYMENT_RETRY_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeReceivablePaymentRetries(retries) {
+  try {
+    if (Object.keys(retries).length === 0) localStorage.removeItem(RECEIVABLE_PAYMENT_RETRY_STORAGE_KEY);
+    else localStorage.setItem(RECEIVABLE_PAYMENT_RETRY_STORAGE_KEY, JSON.stringify(retries));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getOrCreateReceivablePaymentRetry(companyId, receivableId, fingerprint) {
+  const scope = `${companyId}::${receivableId}`;
+  const retries = readReceivablePaymentRetries();
+  const previous = retries[scope];
+  const paymentId = typeof previous?.paymentId === "string" && previous.paymentId.length <= 64
+    ? previous.paymentId
+    : randomUuid();
+  retries[scope] = { paymentId, fingerprint, createdAt: Number(previous?.createdAt) || Date.now() };
+  if (!writeReceivablePaymentRetries(retries)) {
+    throw new Error("O navegador bloqueou o armazenamento seguro da tentativa. Libere o armazenamento do site antes de registrar o pagamento.");
+  }
+  return { scope, paymentId };
+}
+
+function clearReceivablePaymentRetry(scope, paymentId) {
+  const retries = readReceivablePaymentRetries();
+  if (retries[scope]?.paymentId !== paymentId) return;
+  delete retries[scope];
+  writeReceivablePaymentRetries(retries);
+}
+
 function bufferToHex(buffer) {
   return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -408,18 +494,30 @@ function sameUser(left, right) {
 }
 
 function canAccess(view) {
+  if (view === "receivables") return accountsReceivableAccess().visible;
   return !adminRoutes.has(view) || isAdmin();
 }
 
+function accountsReceivableAccess() {
+  return receivablesEntitlementAccess(state.receivablesEntitlement);
+}
+
 function availableNavItems() {
-  return navItems.filter(([, , , access]) => access !== "admin" || isAdmin());
+  return navItems.filter(([, , , access]) => {
+    if (access === "admin") return isAdmin();
+    if (access === "receivables") return accountsReceivableAccess().visible;
+    return true;
+  });
 }
 
 function enforceAccess() {
   if (!canAccess(state.view)) {
+    const restrictedView = state.view;
     state.view = "dashboard";
     window.location.hash = "/dashboard";
-    toast("Acesso restrito ao administrador.");
+    toast(restrictedView === "receivables"
+      ? "Modulo de contas a receber indisponivel para esta empresa."
+      : "Acesso restrito ao administrador.");
   }
 }
 
@@ -582,6 +680,11 @@ function tenantDocument(collectionName, id) {
   return doc(tenantCollection(collectionName), String(id));
 }
 
+function accountsReceivableEntitlementDocument() {
+  if (!tenantId()) throw new Error("Empresa não autenticada.");
+  return doc(db, "companies", tenantId(), "entitlements", ACCOUNTS_RECEIVABLE_ENTITLEMENT);
+}
+
 function currentOpenRegister() {
   if (state.activeRegisterControlInitialized) {
     return state.activeRegisterControl?.isOpen === true ? state.activeRegisterControl : null;
@@ -619,18 +722,111 @@ async function closeOlderOpenRegisters(activeRegister) {
 function clearSubscriptions() {
   unsubscribers.forEach((unsubscribe) => unsubscribe());
   unsubscribers = [];
+  receivablesEntitlementUnsubscribe?.();
+  receivablesEntitlementUnsubscribe = null;
+  stopReceivablesSubscriptions(true);
   state.loadedCollections.clear();
+  state.collectionErrors.clear();
   state.companyProfile = null;
   state.receiptSettings = null;
+  state.receivablesEntitlement = null;
+  state.receivablesEntitlementLoaded = false;
   state.activeRegisterControl = null;
   state.activeRegisterControlInitialized = false;
   Object.keys(state.data).forEach((key) => { state.data[key] = []; });
 }
 
+function clearReceivablesData() {
+  state.receivables.customers = [];
+  state.receivables.receivables = [];
+  state.receivables.payments = [];
+  state.receivables.loadedCollections.clear();
+  state.receivables.errors.clear();
+  pendingReceivablePayments.clear();
+}
+
+function stopReceivablesSubscriptions(clearData = false) {
+  receivablesUnsubscribers.forEach((unsubscribe) => unsubscribe());
+  receivablesUnsubscribers = [];
+  receivablesSubscribedTenant = "";
+  if (clearData) clearReceivablesData();
+}
+
+function subscribeReceivablesData() {
+  const companyId = tenantId();
+  if (!companyId || receivablesSubscribedTenant === companyId || !accountsReceivableAccess().visible) return;
+  stopReceivablesSubscriptions(true);
+  receivablesSubscribedTenant = companyId;
+
+  Object.entries(receivablesCollections).forEach(([key, collectionName]) => {
+    const unsubscribe = onSnapshot(tenantCollection(collectionName), (snapshot) => {
+      if (tenantId() !== companyId || !accountsReceivableAccess().visible) return;
+      state.receivables[key] = snapshot.docs
+        .map((item) => ({ ...item.data(), docId: item.id }))
+        .sort((left, right) => (Number(right.updatedAt ?? right.createdAt ?? right.timestamp) || 0)
+          - (Number(left.updatedAt ?? left.createdAt ?? left.timestamp) || 0));
+      state.receivables.loadedCollections.add(key);
+      state.receivables.errors.delete(key);
+      state.lastSync = new Date();
+      if (state.user && !hasOpenModal()) renderApp();
+    }, (error) => {
+      if (tenantId() !== companyId) return;
+      state.receivables.errors.set(key, error.message || `Falha ao carregar ${collectionName}.`);
+      if (state.user && !hasOpenModal()) renderApp();
+    });
+    receivablesUnsubscribers.push(unsubscribe);
+  });
+}
+
+function subscribeAccountsReceivableEntitlement() {
+  const companyId = tenantId();
+  if (!companyId) return;
+  receivablesEntitlementUnsubscribe?.();
+  receivablesEntitlementUnsubscribe = onSnapshot(accountsReceivableEntitlementDocument(), (snapshot) => {
+    if (tenantId() !== companyId) return;
+    const previousMode = accountsReceivableAccess().mode;
+    state.receivablesEntitlement = snapshot.exists()
+      ? { ...snapshot.data(), id: snapshot.id }
+      : null;
+    state.receivablesEntitlementLoaded = true;
+    state.receivables.errors.delete("entitlement");
+    const access = accountsReceivableAccess();
+    if (access.visible) {
+      subscribeReceivablesData();
+    } else {
+      stopReceivablesSubscriptions(true);
+      if (state.view === "receivables") {
+        state.view = "dashboard";
+        window.location.hash = "/dashboard";
+      }
+    }
+    if (state.user && (previousMode !== access.mode || !hasOpenModal())) renderApp();
+  }, (error) => {
+    if (tenantId() !== companyId) return;
+    state.receivablesEntitlement = null;
+    state.receivablesEntitlementLoaded = true;
+    stopReceivablesSubscriptions(true);
+    if (state.view === "receivables") {
+      state.view = "dashboard";
+      window.location.hash = "/dashboard";
+    }
+    state.receivables.errors.set("entitlement", error.message || "Falha ao verificar o modulo de contas a receber.");
+    if (state.user) renderApp();
+  });
+}
+
 function syncLabel() {
-  if (state.firebaseError) return "Erro no Firebase";
+  if (combinedFirebaseError()) return "Erro no Firebase";
   if (!isReady()) return "Sincronizando";
   return state.lastSync ? `Atualizado ${dateTime.format(state.lastSync)}` : "Online";
+}
+
+function receivablesFirebaseError() {
+  return [...state.receivables.errors.values()][0] || "";
+}
+
+function combinedFirebaseError() {
+  return state.firebaseError || [...state.collectionErrors.values()][0] || receivablesFirebaseError();
 }
 
 function hasOpenModal() {
@@ -675,18 +871,20 @@ function subscribe() {
       if (dataKey === "products") syncCartProducts();
       if (dataKey === "users") syncSessionUser();
       state.loadedCollections.add(key);
+      state.collectionErrors.delete(key);
       state.loading = false;
-      state.firebaseError = "";
       state.lastSync = new Date();
       if (state.user && !hasOpenModal()) renderApp();
     }, (error) => {
       state.loading = false;
-      state.firebaseError = error.message || `Falha ao carregar ${name}.`;
+      const message = error.message || `Falha ao carregar ${name}.`;
+      state.collectionErrors.set(key, message);
       if (state.user) renderApp();
-      else renderAuthScreen(state.firebaseError);
+      else renderAuthScreen(message);
     });
     unsubscribers.push(unsubscribe);
   });
+  subscribeAccountsReceivableEntitlement();
 }
 
 function syncSessionUser() {
@@ -933,7 +1131,7 @@ function renderApp(focusId = null) {
           ${availableNavItems().map(([id, label, glyph]) => `<button data-view="${id}" class="${state.view === id ? "active" : ""}">${icon(glyph)} ${label}</button>`).join("")}
         </nav>
         <div class="sidebar-footer">
-          <div class="sync-pill ${state.firebaseError ? "bad" : isReady() ? "good" : ""}">
+          <div class="sync-pill ${combinedFirebaseError() ? "bad" : isReady() ? "good" : ""}">
             <span></span>
             ${escapeHtml(syncLabel())}
           </div>
@@ -978,7 +1176,7 @@ function renderView() {
       </div>
       <div>${actions}</div>
     </header>
-    ${state.firebaseError ? `<div class="notice error-notice">${icon("error")} ${escapeHtml(state.firebaseError)}</div>` : ""}
+    ${combinedFirebaseError() ? `<div class="notice error-notice">${icon("error")} ${escapeHtml(combinedFirebaseError())}</div>` : ""}
     ${!isReady() ? `<div class="notice">${icon("sync")} Carregando dados...</div>` : ""}
     ${views[state.view]()}
   `;
@@ -986,6 +1184,9 @@ function renderView() {
 
 function renderTopActions() {
   if (!canAccess(state.view)) return "";
+  if (state.view === "receivables" && accountsReceivableAccess().canCreate) {
+    return `<button class="btn secondary" data-action="receivable-customer-new">${icon("person_add")} Cliente</button> <button class="btn" data-action="receivable-new">${icon("post_add")} Conta manual</button>`;
+  }
   if (state.view === "inventory") return `<button class="btn" data-action="product-new">${icon("add")} Produto</button>`;
   if (state.view === "stockHistory") return `<button class="btn" data-action="stock-adjust">${icon("tune")} Ajustar Estoque</button>`;
   if (state.view === "categories") return `<button class="btn" data-action="category-new">${icon("add")} Categoria</button>`;
@@ -997,6 +1198,7 @@ function renderTopActions() {
 const views = {
   dashboard: renderDashboard,
   pos: renderPos,
+  receivables: renderReceivables,
   inventory: renderInventory,
   stockHistory: renderStockHistory,
   cash: renderCash,
@@ -1473,6 +1675,138 @@ function renderUsers() {
     }).join(""));
 }
 
+const receivableStatusLabels = {
+  OPEN: "Em aberto",
+  PARTIAL: "Parcial",
+  PAID: "Paga",
+  OVERDUE: "Atrasada",
+  CANCELLED: "Cancelada",
+};
+
+function receivableStatusBadge(status) {
+  const classes = {
+    OPEN: "manual",
+    PARTIAL: "warn",
+    PAID: "good",
+    OVERDUE: "bad",
+    CANCELLED: "bad",
+  };
+  return `<span class="badge ${classes[status] || ""}">${escapeHtml(receivableStatusLabels[status] || status)}</span>`;
+}
+
+function receivablesDataReady() {
+  return state.receivables.loadedCollections.size >= Object.keys(receivablesCollections).length;
+}
+
+function findReceivableCustomer(customerId) {
+  return state.receivables.customers.find((customer) => String(customer.id ?? "") === String(customerId)
+    || String(customer.docId ?? "") === String(customerId));
+}
+
+function findReceivable(receivableId) {
+  return state.receivables.receivables.find((receivable) => String(receivable.id ?? "") === String(receivableId)
+    || String(receivable.docId ?? "") === String(receivableId));
+}
+
+function formatReceivableDueDate(value) {
+  const millis = normalizeTimestamp(value);
+  return millis ? dateOnly.format(new Date(millis)) : "-";
+}
+
+function renderReceivables() {
+  const access = accountsReceivableAccess();
+  if (!access.visible) return `<section class="section"><div class="notice">Modulo adicional indisponivel para esta empresa.</div></section>`;
+
+  const search = String(state.filters.receivablesSearch || "").trim().toLocaleLowerCase("pt-BR");
+  const filteredByStatus = filterReceivables(
+    state.receivables.receivables,
+    state.filters.receivablesStatus,
+  );
+  const accounts = filteredByStatus.filter((receivable) => {
+    if (!search) return true;
+    return `${receivable.customerName || ""} ${receivable.description || ""}`.toLocaleLowerCase("pt-BR").includes(search);
+  });
+  const customers = state.receivables.customers
+    .filter((customer) => customer.isActive !== false)
+    .filter((customer) => !search || `${customer.name || ""} ${customer.phone || ""} ${customer.document || ""}`.toLocaleLowerCase("pt-BR").includes(search));
+  const summary = receivablesSummary(state.receivables.receivables);
+
+  return `
+    <section class="section receivables-page">
+      ${access.canCreate ? "" : `
+        <div class="notice receivables-plan-notice">
+          ${icon("lock_clock")}
+          <div><strong>Adicional vencido ou suspenso</strong><br><span>O histórico permanece disponível e você pode receber contas existentes, mas não pode cadastrar novos clientes ou novas contas.</span></div>
+        </div>
+      `}
+      <div class="notice receivables-scope-notice">
+        ${icon("info")}
+        <div><strong>Controle manual de dívidas</strong><br><span>Este módulo não cria uma venda e não movimenta o caixa. Quando um recebimento entrar no caixa, registre também uma Entrada Manual na tela Caixa.</span></div>
+      </div>
+
+      <div class="grid receivables-metrics">
+        <article class="panel metric primary"><span>Total a receber</span><strong>${money.format(summary.outstandingAmountCents / 100)}</strong><small>${state.receivables.receivables.filter((item) => ["OPEN", "PARTIAL", "OVERDUE"].includes(receivableDisplayStatus(item))).length} conta(s) pendente(s)</small></article>
+        <article class="panel metric tertiary"><span>Total atrasado</span><strong>${money.format(summary.overdueAmountCents / 100)}</strong><small>Saldo com vencimento anterior a hoje</small></article>
+        <article class="panel metric secondary"><span>Total recebido</span><strong>${money.format(summary.receivedAmountCents / 100)}</strong><small>Pagamentos registrados neste módulo</small></article>
+      </div>
+
+      <div class="panel">
+        <div class="toolbar receivables-toolbar">
+          <div><h2>Contas a receber</h2><p class="muted">Contas cadastradas manualmente, sem ligação automática com vendas.</p></div>
+          <div class="receivables-filters">
+            <label class="field"><span>Situação</span><span class="input-wrap">${icon("filter_list")}<select id="receivablesStatusFilter">
+              ${[["ALL", "Todas"], ["OPEN", "Em aberto"], ["PARTIAL", "Parciais"], ["PAID", "Pagas"], ["OVERDUE", "Atrasadas"]].map(([value, label]) => `<option value="${value}" ${state.filters.receivablesStatus === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select></span></label>
+            <label class="field receivables-search"><span>Buscar</span><span class="input-wrap">${icon("search")}<input id="receivablesSearch" value="${escapeHtml(state.filters.receivablesSearch)}" placeholder="Cliente ou descrição" /></span></label>
+          </div>
+        </div>
+        ${receivablesDataReady() ? `
+          <div class="table-wrap"><table class="receivables-table">
+            <thead><tr><th>Cliente</th><th>Descrição</th><th>Valor original</th><th>Saldo</th><th>Vencimento</th><th>Situação</th><th>Ações</th></tr></thead>
+            <tbody>${accounts.map((receivable) => {
+              const status = receivableDisplayStatus(receivable);
+              const customer = findReceivableCustomer(receivable.customerId);
+              const key = escapeHtml(docKey(receivable));
+              const canReceive = access.canCollect && Number(receivable.outstandingAmountCents) > 0 && !["PAID", "CANCELLED"].includes(status);
+              const hasPhone = Boolean(String(customer?.phone || "").replace(/\D/g, ""));
+              return `<tr>
+                <td><strong>${escapeHtml(receivable.customerName || customer?.name || "Cliente")}</strong></td>
+                <td>${escapeHtml(receivable.description || "Conta manual")}</td>
+                <td>${money.format((Number(receivable.originalAmountCents) || 0) / 100)}</td>
+                <td><strong>${money.format((Number(receivable.outstandingAmountCents) || 0) / 100)}</strong></td>
+                <td>${escapeHtml(formatReceivableDueDate(receivable.dueAt))}</td>
+                <td>${receivableStatusBadge(status)}</td>
+                <td class="receivables-row-actions">
+                  ${canReceive ? `<button class="icon-btn" data-receivable-payment="${key}" title="Registrar pagamento">${icon("payments")}</button>` : ""}
+                  <button class="icon-btn" data-receivable-history="${key}" title="Histórico de pagamentos">${icon("history")}</button>
+                  ${hasPhone && Number(receivable.outstandingAmountCents) > 0 && status !== "CANCELLED" ? `<button class="icon-btn" data-receivable-whatsapp="${key}" title="Enviar lembrete pelo WhatsApp">${icon("chat")}</button>` : ""}
+                </td>
+              </tr>`;
+            }).join("") || `<tr><td colspan="7" class="muted">Nenhuma conta encontrada para este filtro.</td></tr>`}</tbody>
+          </table></div>
+        ` : `<p class="muted">Carregando clientes e contas...</p>`}
+      </div>
+
+      <div class="panel">
+        <div class="toolbar"><div><h2>Clientes</h2><p class="muted">Cadastro utilizado somente pelo módulo de contas a receber.</p></div></div>
+        <div class="table-wrap"><table class="receivables-customers-table">
+          <thead><tr><th>Nome</th><th>Telefone</th><th>Documento</th><th>Observações</th><th></th></tr></thead>
+          <tbody>${customers.map((customer) => {
+            const key = escapeHtml(docKey(customer));
+            return `<tr>
+              <td><strong>${escapeHtml(customer.name || "-")}</strong></td>
+              <td>${escapeHtml(customer.phone || "-")}</td>
+              <td>${escapeHtml(customer.document || "-")}</td>
+              <td>${escapeHtml(customer.notes || "-")}</td>
+              <td>${access.canCreate ? `<button class="icon-btn" data-receivable-customer-account="${key}" title="Criar conta manual">${icon("post_add")}</button><button class="icon-btn" data-edit-receivable-customer="${key}" title="Editar cliente">${icon("edit")}</button>` : ""}</td>
+            </tr>`;
+          }).join("") || `<tr><td colspan="5" class="muted">Nenhum cliente encontrado.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </section>
+  `;
+}
+
 function reportSales(bounds) {
   return state.data.sales.filter((item) => {
     return !saleIsCancelled(item) && inBounds(saleTimestamp(item), bounds);
@@ -1809,6 +2143,14 @@ function bindViewEvents() {
     state.filters.cashHistoryDate = event.target.value;
     renderApp();
   });
+  document.querySelector("#receivablesStatusFilter")?.addEventListener("change", (event) => {
+    state.filters.receivablesStatus = event.target.value;
+    renderApp();
+  });
+  document.querySelector("#receivablesSearch")?.addEventListener("input", (event) => {
+    state.filters.receivablesSearch = event.target.value;
+    renderApp("receivablesSearch");
+  });
   document.querySelectorAll("#posSearch,#inventorySearch,#genericSearch").forEach((input) => input.addEventListener("input", (event) => {
     state.search = event.target.value;
     renderApp(event.target.id);
@@ -1827,6 +2169,11 @@ function bindViewEvents() {
     });
   });
   document.querySelectorAll("[data-cancel-kind]").forEach((button) => button.addEventListener("click", () => cancelTransaction(button.dataset.cancelKind, button.dataset.cancelId)));
+  document.querySelectorAll("[data-edit-receivable-customer]").forEach((button) => button.addEventListener("click", () => openReceivableCustomerModal(button.dataset.editReceivableCustomer)));
+  document.querySelectorAll("[data-receivable-customer-account]").forEach((button) => button.addEventListener("click", () => openReceivableModal(button.dataset.receivableCustomerAccount)));
+  document.querySelectorAll("[data-receivable-payment]").forEach((button) => button.addEventListener("click", () => openReceivablePaymentModal(button.dataset.receivablePayment)));
+  document.querySelectorAll("[data-receivable-history]").forEach((button) => button.addEventListener("click", () => openReceivablePaymentHistory(button.dataset.receivableHistory)));
+  document.querySelectorAll("[data-receivable-whatsapp]").forEach((button) => button.addEventListener("click", () => openReceivableWhatsapp(button.dataset.receivableWhatsapp)));
   document.querySelector("#discountInput")?.addEventListener("input", (event) => {
     state.discount = Math.max(0, parseDecimal(event.target.value));
   });
@@ -1985,6 +2332,8 @@ function clearCart() {
 }
 
 const actions = {
+  "receivable-customer-new": () => openReceivableCustomerModal(),
+  "receivable-new": () => openReceivableModal(),
   "product-new": () => openProductModal(),
   "category-new": () => openNameModal("Categoria", collections.categories, state.data.categories),
   "supplier-new": () => openSupplierModal(),
@@ -2036,10 +2385,14 @@ function openModal(title, body, onSubmit) {
     if (submitting) return;
     submitting = true;
     const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    const closeButtons = [...document.querySelectorAll("[data-close-modal]")];
+    event.currentTarget.dataset.submitting = "true";
     if (submitButton) submitButton.disabled = true;
+    closeButtons.forEach((button) => { button.disabled = true; });
     try {
       const afterSave = await onSubmit(new FormData(event.currentTarget));
       state.firebaseError = "";
+      delete event.currentTarget.dataset.submitting;
       closeModal();
       renderApp();
       if (typeof afterSave === "function") {
@@ -2052,12 +2405,15 @@ function openModal(title, body, onSubmit) {
       }
       toast(message);
       submitting = false;
+      delete event.currentTarget.dataset.submitting;
       if (submitButton) submitButton.disabled = false;
+      closeButtons.forEach((button) => { button.disabled = false; });
     }
   });
 }
 
 function closeModal() {
+  if (document.querySelector("#modalForm[data-submitting='true']")) return;
   document.querySelector("#modalRoot").innerHTML = "";
 }
 
@@ -2129,6 +2485,288 @@ function input(name, label, value = "", type = "text") {
 
 function select(name, label, options, value = "") {
   return `<label class="field"><span>${label}</span><span class="input-wrap"><select name="${name}">${options.map(([id, text]) => `<option value="${id}" ${String(id) === String(value) ? "selected" : ""}>${escapeHtml(text)}</option>`).join("")}</select></span></label>`;
+}
+
+function receivableActorUid() {
+  return String(auth.currentUser?.uid || state.user?.uid || state.user?.docId || "");
+}
+
+function receivableActorName() {
+  return String(state.user?.username || "Usuario");
+}
+
+function requireReceivablesCreationAccess() {
+  if (!accountsReceivableAccess().canCreate) {
+    throw new Error("O adicional precisa estar ativo para cadastrar novos clientes ou contas.");
+  }
+}
+
+function openReceivableCustomerModal(customerKey = "") {
+  const customer = customerKey
+    ? state.receivables.customers.find((item) => docKey(item) === String(customerKey))
+    : null;
+  try {
+    requireReceivablesCreationAccess();
+  } catch (error) {
+    toast(error.message);
+    return;
+  }
+  if (customerKey && !customer) return toast("Cliente nao encontrado.");
+
+  const id = customer?.id || randomUuid();
+  openModal(customer ? "Editar cliente" : "Novo cliente", `
+    <div class="form-grid">
+      <label class="field"><span>Nome *</span><span class="input-wrap">${icon("person")}<input name="name" value="${escapeHtml(customer?.name || "")}" maxlength="120" required /></span></label>
+      ${input("phone", "Telefone", customer?.phone || "", "tel")}
+      ${input("document", "CPF/CNPJ ou documento", customer?.document || "")}
+      <label class="field form-grid-wide"><span>Observações</span><span class="input-wrap textarea-wrap"><textarea name="notes" rows="3" maxlength="500">${escapeHtml(customer?.notes || "")}</textarea></span></label>
+    </div>
+  `, async (form) => {
+    requireReceivablesCreationAccess();
+    const name = String(form.get("name") || "").trim();
+    const phone = String(form.get("phone") || "").trim();
+    const documentNumber = String(form.get("document") || "").trim();
+    if (name.length < 2) throw new Error("O nome do cliente deve ter pelo menos 2 caracteres.");
+    if (phone.length > 32) throw new Error("O telefone deve ter no máximo 32 caracteres.");
+    if (documentNumber.length > 32) throw new Error("O documento deve ter no máximo 32 caracteres.");
+    const now = Date.now();
+    await setDoc(tenantDocument(receivablesCollections.customers, id), tenantPayload({
+      id,
+      name,
+      phone,
+      document: documentNumber,
+      notes: String(form.get("notes") || "").trim(),
+      isActive: customer?.isActive !== false,
+      createdAt: Number(customer?.createdAt) || now,
+      updatedAt: now,
+      createdByUid: customer?.createdByUid || receivableActorUid(),
+      updatedByUid: receivableActorUid(),
+    }), { merge: true });
+    toast("Cliente salvo.");
+  });
+}
+
+function openReceivableModal(preselectedCustomerId = "") {
+  try {
+    requireReceivablesCreationAccess();
+  } catch (error) {
+    toast(error.message);
+    return;
+  }
+  const customers = state.receivables.customers.filter((customer) => customer.isActive !== false);
+  if (!customers.length) {
+    toast("Cadastre um cliente antes de criar uma conta.");
+    openReceivableCustomerModal();
+    return;
+  }
+
+  const id = randomUuid();
+  const today = millisToLocalDateInput(Date.now());
+  openModal("Nova conta manual", `
+    <div class="notice receivables-scope-notice compact">
+      ${icon("info")}<span>Esta conta controla somente a dívida. Ela não cria uma venda e não movimenta o caixa.</span>
+    </div>
+    <div class="form-grid">
+      ${select("customerId", "Cliente *", customers.map((customer) => [customer.id || customer.docId, customer.name]), preselectedCustomerId)}
+      <label class="field"><span>Valor da conta *</span><span class="input-wrap">${icon("payments")}<input name="amount" inputmode="decimal" placeholder="0,00" required /></span></label>
+      <label class="field"><span>Vencimento *</span><span class="input-wrap">${icon("event")}<input name="dueDate" type="date" value="${today}" required /></span></label>
+      <label class="field form-grid-wide"><span>Descrição *</span><span class="input-wrap"><input name="description" maxlength="180" placeholder="Ex.: Compra fiada" required /></span></label>
+    </div>
+  `, async (form) => {
+    requireReceivablesCreationAccess();
+    const customerId = String(form.get("customerId") || "");
+    const customer = findReceivableCustomer(customerId);
+    if (!customer || customer.isActive === false) throw new Error("Selecione um cliente ativo.");
+    const description = String(form.get("description") || "").trim();
+    if (!description) throw new Error("Informe uma descrição para a conta.");
+    const originalAmountCents = parseMoneyToCents(form.get("amount"));
+    if (!Number.isSafeInteger(originalAmountCents) || originalAmountCents <= 0) {
+      throw new Error("Informe um valor válido maior que zero, por exemplo 1.234,56.");
+    }
+    const dueAt = localDateInputToMillis(form.get("dueDate"));
+    if (!dueAt) throw new Error("Informe uma data de vencimento valida.");
+    const now = Date.now();
+    await setDoc(tenantDocument(receivablesCollections.receivables, id), tenantPayload({
+      id,
+      customerId: String(customer.id || customer.docId),
+      customerName: String(customer.name || "Cliente"),
+      description,
+      originalAmountCents,
+      outstandingAmountCents: originalAmountCents,
+      createdAt: now,
+      dueAt,
+      status: "OPEN",
+      lastPaymentId: "",
+      lastPaymentAt: 0,
+      createdByUid: receivableActorUid(),
+      updatedAt: now,
+      updatedByUid: receivableActorUid(),
+    }));
+    toast("Conta manual cadastrada.");
+  });
+}
+
+function openReceivablePaymentModal(receivableKey) {
+  const receivable = findReceivable(receivableKey);
+  const access = accountsReceivableAccess();
+  if (!access.canCollect) return toast("O modulo nao permite registrar pagamentos neste momento.");
+  if (!receivable) return toast("Conta nao encontrada.");
+
+  const receivableId = String(receivable.id || receivable.docId || "");
+  if (pendingReceivablePayments.has(receivableId)) {
+    return toast("Já existe um pagamento sendo processado para esta conta.");
+  }
+
+  const currentOutstanding = Math.max(0, Math.trunc(Number(receivable.outstandingAmountCents) || 0));
+  if (!currentOutstanding || ["PAID", "CANCELLED"].includes(String(receivable.status || "").toUpperCase())) {
+    return toast("Esta conta nao possui saldo para receber.");
+  }
+
+  openModal("Registrar pagamento", `
+    <div class="receivable-payment-heading">
+      <span>Saldo atual</span><strong>${money.format(currentOutstanding / 100)}</strong>
+    </div>
+    <div class="notice receivables-scope-notice compact">
+      ${icon("info")}<span>Este pagamento reduz a dívida, mas não cria entrada no caixa. Se o valor entrou no caixa, registre uma Entrada Manual separadamente.</span>
+    </div>
+    <div class="form-grid">
+      <label class="field"><span>Valor recebido *</span><span class="input-wrap">${icon("payments")}<input name="amount" inputmode="decimal" value="${escapeHtml(formatMoneyCentsInput(currentOutstanding))}" required /></span></label>
+      ${select("paymentMethod", "Forma de pagamento *", paymentOptions, "PIX")}
+      <label class="field form-grid-wide"><span>Observações</span><span class="input-wrap textarea-wrap"><textarea name="notes" rows="3" maxlength="300"></textarea></span></label>
+    </div>
+  `, async (form) => {
+    if (!accountsReceivableAccess().canCollect) throw new Error("O modulo nao permite registrar pagamentos neste momento.");
+    if (pendingReceivablePayments.has(receivableId)) throw new Error("Esta conta já possui um pagamento em processamento.");
+    const amountCents = parseMoneyToCents(form.get("amount"));
+    const paymentMethod = normalizePaymentMethod(form.get("paymentMethod"));
+    const customerId = String(receivable.customerId || "");
+    const notes = String(form.get("notes") || "").trim();
+    const createdByUid = receivableActorUid();
+    if (!paymentOptions.some(([method]) => method === paymentMethod)) throw new Error("Selecione uma forma de pagamento valida.");
+    if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+      throw new Error("Informe um valor válido, por exemplo 1.234,56.");
+    }
+    applyReceivablePayment(receivable, amountCents);
+
+    const companyId = tenantId();
+    const fingerprint = receivablePaymentFingerprint({
+      companyId,
+      receivableId,
+      customerId,
+      expectedOutstandingAmountCents: currentOutstanding,
+      amountCents,
+      paymentMethod,
+      notes,
+      createdByUid,
+    });
+    const operation = getOrCreateReceivablePaymentRetry(companyId, receivableId, fingerprint);
+    const paymentId = operation.paymentId;
+    let previousPaymentConfirmed = false;
+
+    pendingReceivablePayments.set(receivableId, paymentId);
+    try {
+      const paymentReference = tenantDocument(receivablesCollections.payments, paymentId);
+      const receivableReference = tenantDocument(receivablesCollections.receivables, docKey(receivable));
+      await runTransaction(db, async (transaction) => {
+        const paymentSnapshot = await transaction.get(paymentReference);
+        if (paymentSnapshot.exists()) {
+          const previous = paymentSnapshot.data();
+          if (!matchesExistingPayment(previous, {
+            receivableId: String(receivable.id || receivable.docId),
+            customerId,
+            amountCents,
+            paymentMethod,
+            notes,
+            createdByUid,
+          })) {
+            previousPaymentConfirmed = true;
+            return;
+          }
+          return;
+        }
+
+        const receivableSnapshot = await transaction.get(receivableReference);
+        if (!receivableSnapshot.exists()) throw new Error("Conta nao encontrada no servidor.");
+        const serverReceivable = receivableSnapshot.data();
+        const next = applyReceivablePayment(serverReceivable, amountCents);
+        const timestamp = Math.max(
+          Date.now(),
+          normalizeTimestamp(serverReceivable.createdAt),
+          normalizeTimestamp(serverReceivable.lastPaymentAt),
+          normalizeTimestamp(serverReceivable.updatedAt),
+        );
+        transaction.set(paymentReference, tenantPayload({
+          id: paymentId,
+          receivableId: String(serverReceivable.id || receivable.id || receivable.docId),
+          customerId: String(serverReceivable.customerId || customerId),
+          amountCents,
+          paymentMethod,
+          timestamp,
+          notes,
+          createdByUid,
+        }));
+        transaction.update(receivableReference, {
+          outstandingAmountCents: next.outstandingAmountCents,
+          status: next.status,
+          lastPaymentId: paymentId,
+          lastPaymentAt: timestamp,
+          updatedAt: timestamp,
+          updatedByUid: createdByUid,
+        });
+      });
+      clearReceivablePaymentRetry(operation.scope, paymentId);
+    } finally {
+      if (pendingReceivablePayments.get(receivableId) === paymentId) {
+        pendingReceivablePayments.delete(receivableId);
+      }
+    }
+    toast(previousPaymentConfirmed
+      ? "O pagamento anterior já estava confirmado. O saldo foi atualizado sem cobrar novamente."
+      : "Pagamento registrado. Lembre-se de lançar a entrada no caixa, se necessário.");
+  });
+}
+
+function openReceivablePaymentHistory(receivableKey) {
+  const receivable = findReceivable(receivableKey);
+  if (!receivable) return toast("Conta nao encontrada.");
+  const payments = state.receivables.payments
+    .filter((payment) => String(payment.receivableId) === String(receivable.id || receivable.docId))
+    .sort((left, right) => normalizeTimestamp(right.timestamp) - normalizeTimestamp(left.timestamp));
+  document.querySelector("#modalRoot").innerHTML = `
+    <div class="modal-backdrop">
+      <section class="modal receivable-history-modal">
+        <header><div><h2>Histórico de pagamentos</h2><p class="muted">${escapeHtml(receivable.customerName || "Cliente")} — ${escapeHtml(receivable.description || "Conta manual")}</p></div><button class="icon-btn" type="button" data-close-modal>${icon("close")}</button></header>
+        <div class="receivable-history-list">
+          ${payments.map((payment) => `<article class="receivable-history-row">
+            <div><strong>${money.format((Number(payment.amountCents) || 0) / 100)}</strong><span>${escapeHtml(paymentMethodLabel(payment.paymentMethod))}</span></div>
+            <div><span>${escapeHtml(dateTime.format(new Date(normalizeTimestamp(payment.timestamp))))}</span>${payment.notes ? `<small>${escapeHtml(payment.notes)}</small>` : ""}</div>
+          </article>`).join("") || `<p class="muted">Nenhum pagamento registrado para esta conta.</p>`}
+        </div>
+        <footer><button class="btn secondary" type="button" data-close-modal>Fechar</button></footer>
+      </section>
+    </div>
+  `;
+  document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
+}
+
+function whatsappPhone(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  return digits;
+}
+
+function openReceivableWhatsapp(receivableKey) {
+  const receivable = findReceivable(receivableKey);
+  if (!receivable) return toast("Conta nao encontrada.");
+  const customer = findReceivableCustomer(receivable.customerId);
+  const phone = whatsappPhone(customer?.phone);
+  if (!phone) return toast("Cadastre o telefone do cliente antes de enviar a mensagem.");
+  const firstName = String(customer?.name || receivable.customerName || "cliente").trim().split(/\s+/)[0];
+  const message = `Olá, ${firstName}. Lembrete da conta "${String(receivable.description || "Conta manual").trim()}" com saldo de ${money.format((Number(receivable.outstandingAmountCents) || 0) / 100)} e vencimento em ${formatReceivableDueDate(receivable.dueAt)}. Em caso de dúvida, entre em contato com ${state.company?.name || "nossa empresa"}.`;
+  const opened = window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  if (opened) opened.opener = null;
+  else toast("O navegador bloqueou a abertura do WhatsApp.");
 }
 
 function openProductModal(product = null) {
@@ -2456,9 +3094,25 @@ function exportBackupJson() {
     toast("Acesso restrito ao administrador.");
     return;
   }
+  if (!state.receivablesEntitlementLoaded) {
+    toast("Aguarde a verificação do módulo de Contas a Receber antes de exportar o backup.");
+    return;
+  }
+  if (state.receivables.errors.size > 0) {
+    toast("O backup não foi gerado porque houve uma falha ao verificar os dados de Contas a Receber.");
+    return;
+  }
+  if (state.receivablesEntitlement && !receivablesDataReady()) {
+    toast("O backup não foi gerado porque os dados de Contas a Receber ainda não estão completos.");
+    return;
+  }
   const backup = {
     app: "GO REGISTER",
+    schemaVersion: 2,
     exportedAt: new Date().toISOString(),
+    moduleSchemas: {
+      accountsReceivable: receivablesDataReady() && accountsReceivableAccess().visible ? 1 : null,
+    },
     collections: {
       products: state.data.products,
       sales: state.data.sales,
@@ -2470,6 +3124,11 @@ function exportBackupJson() {
       users: state.data.users.map((user) => ({ ...user, passwordHash: user.passwordHash ? "[redacted]" : "", sessionToken: user.sessionToken ? "[redacted]" : "" })),
       stock_movements: state.data.stockMovements,
       settings: state.data.settings.map((setting) => ({ ...setting, passwordHash: setting.passwordHash ? "[redacted]" : "" })),
+      ...(receivablesDataReady() && accountsReceivableAccess().visible ? {
+        customers: state.receivables.customers,
+        receivables: state.receivables.receivables,
+        receivable_payments: state.receivables.payments,
+      } : {}),
     },
   };
   downloadBlob(JSON.stringify(backup, null, 2), `backup_go_register_${dateStamp()}.json`, "application/json");
