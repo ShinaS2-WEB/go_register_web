@@ -2384,15 +2384,16 @@ function openModal(title, body, onSubmit) {
     event.preventDefault();
     if (submitting) return;
     submitting = true;
-    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    const formElement = event.currentTarget;
+    const submitButton = formElement.querySelector('button[type="submit"]');
     const closeButtons = [...document.querySelectorAll("[data-close-modal]")];
-    event.currentTarget.dataset.submitting = "true";
+    formElement.dataset.submitting = "true";
     if (submitButton) submitButton.disabled = true;
     closeButtons.forEach((button) => { button.disabled = true; });
     try {
-      const afterSave = await onSubmit(new FormData(event.currentTarget));
+      const afterSave = await onSubmit(new FormData(formElement));
       state.firebaseError = "";
-      delete event.currentTarget.dataset.submitting;
+      delete formElement.dataset.submitting;
       closeModal();
       renderApp();
       if (typeof afterSave === "function") {
@@ -2405,7 +2406,7 @@ function openModal(title, body, onSubmit) {
       }
       toast(message);
       submitting = false;
-      delete event.currentTarget.dataset.submitting;
+      delete formElement.dataset.submitting;
       if (submitButton) submitButton.disabled = false;
       closeButtons.forEach((button) => { button.disabled = false; });
     }
