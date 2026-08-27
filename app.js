@@ -19,15 +19,18 @@ import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, s
 import {
   applyReceivablePayment,
   filterReceivables,
+  groupReceivablesByCustomer,
   localDateInputToMillis,
   matchesExistingPayment,
   millisToLocalDateInput,
   parseMoneyToCents,
   receivableDisplayStatus,
   receivablePaymentFingerprint,
+  receivablePaymentsForCustomer,
   receivablesEntitlementAccess,
   receivablesSummary,
-} from "./receivables-core.mjs?v=accounts-receivable-v1";
+} from "./receivables-core.mjs?v=customer-debt-order-v1";
+import { calculateExpectedRegisterBalance } from "./cash-register-core.mjs?v=all-payment-methods-v1";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDaNbVpvkGov4vtabbk-bAWOpb7nDpmzrA",
@@ -1176,8 +1179,6 @@ function renderView() {
       </div>
       <div>${actions}</div>
     </header>
-    ${combinedFirebaseError() ? `<div class="notice error-notice">${icon("error")} ${escapeHtml(combinedFirebaseError())}</div>` : ""}
-    ${!isReady() ? `<div class="notice">${icon("sync")} Carregando dados...</div>` : ""}
     ${views[state.view]()}
   `;
 }
@@ -1513,7 +1514,12 @@ function registerReport(register) {
   const cashExits = registerExits
     .filter((item) => paymentMethodGroup(item.paymentMethod) === "CASH")
     .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const expected = (Number(register.initialBalance) || 0) + cashSales + cashEntries - cashExits;
+  const expected = calculateExpectedRegisterBalance({
+    initialBalance: register.initialBalance,
+    sales,
+    entries,
+    exits,
+  });
   const closing = register.closingBalance == null ? null : Number(register.closingBalance);
   return { sales, entries, exits, cashSales, cashEntries, cashExits, expected, closing, difference: closing == null ? null : closing - expected };
 }
@@ -1715,17 +1721,20 @@ function formatReceivableDueDate(value) {
 
 function renderReceivables() {
   const access = accountsReceivableAccess();
-  if (!access.visible) return `<section class="section"><div class="notice">Modulo adicional indisponivel para esta empresa.</div></section>`;
+  if (!access.visible) return `<section class="section"></section>`;
 
   const search = String(state.filters.receivablesSearch || "").trim().toLocaleLowerCase("pt-BR");
   const filteredByStatus = filterReceivables(
     state.receivables.receivables,
     state.filters.receivablesStatus,
   );
-  const accounts = filteredByStatus.filter((receivable) => {
+  const matchingAccounts = filteredByStatus.filter((receivable) => {
     if (!search) return true;
     return `${receivable.customerName || ""} ${receivable.description || ""}`.toLocaleLowerCase("pt-BR").includes(search);
   });
+  const accounts = state.filters.receivablesStatus === "ALL"
+    ? groupReceivablesByCustomer(matchingAccounts)
+    : matchingAccounts;
   const customers = state.receivables.customers
     .filter((customer) => customer.isActive !== false)
     .filter((customer) => !search || `${customer.name || ""} ${customer.phone || ""} ${customer.document || ""}`.toLocaleLowerCase("pt-BR").includes(search));
@@ -1733,17 +1742,6 @@ function renderReceivables() {
 
   return `
     <section class="section receivables-page">
-      ${access.canCreate ? "" : `
-        <div class="notice receivables-plan-notice">
-          ${icon("lock_clock")}
-          <div><strong>Adicional vencido ou suspenso</strong><br><span>O histórico permanece disponível e você pode receber contas existentes, mas não pode cadastrar novos clientes ou novas contas.</span></div>
-        </div>
-      `}
-      <div class="notice receivables-scope-notice">
-        ${icon("info")}
-        <div><strong>Controle manual de dívidas</strong><br><span>Este módulo não cria uma venda e não movimenta o caixa. Quando um recebimento entrar no caixa, registre também uma Entrada Manual na tela Caixa.</span></div>
-      </div>
-
       <div class="grid receivables-metrics">
         <article class="panel metric primary"><span>Total a receber</span><strong>${money.format(summary.outstandingAmountCents / 100)}</strong><small>${state.receivables.receivables.filter((item) => ["OPEN", "PARTIAL", "OVERDUE"].includes(receivableDisplayStatus(item))).length} conta(s) pendente(s)</small></article>
         <article class="panel metric tertiary"><span>Total atrasado</span><strong>${money.format(summary.overdueAmountCents / 100)}</strong><small>Saldo com vencimento anterior a hoje</small></article>
@@ -1790,7 +1788,7 @@ function renderReceivables() {
       <div class="panel">
         <div class="toolbar"><div><h2>Clientes</h2><p class="muted">Cadastro utilizado somente pelo módulo de contas a receber.</p></div></div>
         <div class="table-wrap"><table class="receivables-customers-table">
-          <thead><tr><th>Nome</th><th>Telefone</th><th>Documento</th><th>Observações</th><th></th></tr></thead>
+          <thead><tr><th>Nome</th><th>Telefone</th><th>Documento</th><th>Observações</th><th>Ações</th></tr></thead>
           <tbody>${customers.map((customer) => {
             const key = escapeHtml(docKey(customer));
             return `<tr>
@@ -1798,7 +1796,10 @@ function renderReceivables() {
               <td>${escapeHtml(customer.phone || "-")}</td>
               <td>${escapeHtml(customer.document || "-")}</td>
               <td>${escapeHtml(customer.notes || "-")}</td>
-              <td>${access.canCreate ? `<button class="icon-btn" data-receivable-customer-account="${key}" title="Criar conta manual">${icon("post_add")}</button><button class="icon-btn" data-edit-receivable-customer="${key}" title="Editar cliente">${icon("edit")}</button>` : ""}</td>
+              <td class="receivables-row-actions">
+                <button class="btn secondary receivable-customer-history-button" data-receivable-customer-history="${key}" title="Histórico individual de pagamentos" aria-label="Histórico individual de pagamentos de ${escapeHtml(customer.name || "cliente")}">${icon("history")} Histórico</button>
+                ${access.canCreate ? `<button class="icon-btn" data-receivable-customer-account="${key}" title="Criar conta manual">${icon("post_add")}</button><button class="icon-btn" data-edit-receivable-customer="${key}" title="Editar cliente">${icon("edit")}</button>` : ""}
+              </td>
             </tr>`;
           }).join("") || `<tr><td colspan="5" class="muted">Nenhum cliente encontrado.</td></tr>`}</tbody>
         </table></div>
@@ -2173,6 +2174,7 @@ function bindViewEvents() {
   document.querySelectorAll("[data-receivable-customer-account]").forEach((button) => button.addEventListener("click", () => openReceivableModal(button.dataset.receivableCustomerAccount)));
   document.querySelectorAll("[data-receivable-payment]").forEach((button) => button.addEventListener("click", () => openReceivablePaymentModal(button.dataset.receivablePayment)));
   document.querySelectorAll("[data-receivable-history]").forEach((button) => button.addEventListener("click", () => openReceivablePaymentHistory(button.dataset.receivableHistory)));
+  document.querySelectorAll("[data-receivable-customer-history]").forEach((button) => button.addEventListener("click", () => openReceivableCustomerPaymentHistory(button.dataset.receivableCustomerHistory)));
   document.querySelectorAll("[data-receivable-whatsapp]").forEach((button) => button.addEventListener("click", () => openReceivableWhatsapp(button.dataset.receivableWhatsapp)));
   document.querySelector("#discountInput")?.addEventListener("input", (event) => {
     state.discount = Math.max(0, parseDecimal(event.target.value));
@@ -2564,9 +2566,6 @@ function openReceivableModal(preselectedCustomerId = "") {
   const id = randomUuid();
   const today = millisToLocalDateInput(Date.now());
   openModal("Nova conta manual", `
-    <div class="notice receivables-scope-notice compact">
-      ${icon("info")}<span>Esta conta controla somente a dívida. Ela não cria uma venda e não movimenta o caixa.</span>
-    </div>
     <div class="form-grid">
       ${select("customerId", "Cliente *", customers.map((customer) => [customer.id || customer.docId, customer.name]), preselectedCustomerId)}
       <label class="field"><span>Valor da conta *</span><span class="input-wrap">${icon("payments")}<input name="amount" inputmode="decimal" placeholder="0,00" required /></span></label>
@@ -2626,9 +2625,6 @@ function openReceivablePaymentModal(receivableKey) {
   openModal("Registrar pagamento", `
     <div class="receivable-payment-heading">
       <span>Saldo atual</span><strong>${money.format(currentOutstanding / 100)}</strong>
-    </div>
-    <div class="notice receivables-scope-notice compact">
-      ${icon("info")}<span>Este pagamento reduz a dívida, mas não cria entrada no caixa. Se o valor entrou no caixa, registre uma Entrada Manual separadamente.</span>
     </div>
     <div class="form-grid">
       <label class="field"><span>Valor recebido *</span><span class="input-wrap">${icon("payments")}<input name="amount" inputmode="decimal" value="${escapeHtml(formatMoneyCentsInput(currentOutstanding))}" required /></span></label>
@@ -2742,6 +2738,32 @@ function openReceivablePaymentHistory(receivableKey) {
             <div><strong>${money.format((Number(payment.amountCents) || 0) / 100)}</strong><span>${escapeHtml(paymentMethodLabel(payment.paymentMethod))}</span></div>
             <div><span>${escapeHtml(dateTime.format(new Date(normalizeTimestamp(payment.timestamp))))}</span>${payment.notes ? `<small>${escapeHtml(payment.notes)}</small>` : ""}</div>
           </article>`).join("") || `<p class="muted">Nenhum pagamento registrado para esta conta.</p>`}
+        </div>
+        <footer><button class="btn secondary" type="button" data-close-modal>Fechar</button></footer>
+      </section>
+    </div>
+  `;
+  document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
+}
+
+function openReceivableCustomerPaymentHistory(customerKey) {
+  const customer = findReceivableCustomer(customerKey);
+  if (!customer) return toast("Cliente nao encontrado.");
+  const customerId = String(customer.id || customer.docId || "");
+  const payments = receivablePaymentsForCustomer(state.receivables.payments, customerId);
+  document.querySelector("#modalRoot").innerHTML = `
+    <div class="modal-backdrop">
+      <section class="modal receivable-history-modal">
+        <header><div><h2>Histórico individual de pagamentos</h2><p class="muted">${escapeHtml(customer.name || "Cliente")}</p></div><button class="icon-btn" type="button" data-close-modal>${icon("close")}</button></header>
+        <div class="receivable-history-list">
+          ${payments.map((payment) => {
+            const receivable = findReceivable(payment.receivableId);
+            const accountDescription = receivable?.description || "Conta não identificada";
+            return `<article class="receivable-history-row">
+              <div><strong>${money.format((Number(payment.amountCents) || 0) / 100)}</strong><span>${escapeHtml(paymentMethodLabel(payment.paymentMethod))}</span><small>Dívida: ${escapeHtml(accountDescription)}</small></div>
+              <div><span>${escapeHtml(dateTime.format(new Date(normalizeTimestamp(payment.timestamp))))}</span>${payment.notes ? `<small>${escapeHtml(payment.notes)}</small>` : ""}</div>
+            </article>`;
+          }).join("") || `<p class="muted">Nenhum pagamento registrado para este cliente.</p>`}
         </div>
         <footer><button class="btn secondary" type="button" data-close-modal>Fechar</button></footer>
       </section>

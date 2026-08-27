@@ -551,26 +551,6 @@ body.dark .icon-btn:hover {
   min-width: 0;
 }
 
-.notice {
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--muted);
-  padding: 0 14px;
-  margin-bottom: 14px;
-  font-weight: 700;
-}
-
-.error-notice {
-  border-color: #f3b8bd;
-  background: #fff5f5;
-  color: var(--danger);
-}
-
 .toolbar {
   min-width: 0;
   display: flex;
@@ -958,7 +938,6 @@ body.dark .modal,
 body.dark .input-wrap,
 body.dark .pos-cart,
 body.dark .cart-total,
-body.dark .notice,
 body.dark .settings-row,
 body.dark .report-result-hero,
 body.dark .report-kpi {
@@ -2251,27 +2230,6 @@ body.dark .transaction-row .amount.minus {
   min-height: 44px;
 }
 
-.receivables-scope-notice,
-.receivables-plan-notice {
-  align-items: flex-start;
-}
-
-.receivables-scope-notice strong,
-.receivables-plan-notice strong {
-  color: var(--text);
-}
-
-.receivables-scope-notice.compact {
-  min-height: auto;
-  margin-bottom: 14px;
-  padding: 12px;
-}
-
-.receivables-plan-notice {
-  border-color: color-mix(in srgb, var(--warning) 40%, var(--line));
-  background: color-mix(in srgb, var(--warning) 10%, var(--surface));
-}
-
 .receivables-table {
   min-width: 940px;
 }
@@ -2282,6 +2240,11 @@ body.dark .transaction-row .amount.minus {
 
 .receivables-row-actions {
   white-space: nowrap;
+}
+
+.receivable-customer-history-button {
+  min-height: 36px;
+  padding-inline: 10px;
 }
 
 .form-grid-wide {
