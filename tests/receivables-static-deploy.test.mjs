@@ -16,10 +16,10 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, ".github", "workflows", "firebase-deploy.yml"), "utf8"),
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
-  assert.match(index, /styles\.css\?v=accounts-receivable-v1/);
-  assert.match(index, /app\.js\?v=accounts-receivable-v1/);
+  assert.match(index, /styles\.css\?v=backup-recovery-v1/);
+  assert.match(index, /app\.js\?v=backup-recovery-v1/);
   assert.match(index, /script-src 'self'/);
-  assert.match(app, /\.\/receivables-core\.mjs\?v=accounts-receivable-v1/);
+  assert.match(app, /\.\/receivables-core\.mjs\?v=backup-recovery-v1/);
   assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
   assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/admin\.css admin\/notifications\.css _site\/admin\//);
   assert.doesNotMatch(workflow, /cp -R admin/);
@@ -41,11 +41,12 @@ test("backup operacional inclui o modulo sem dados de cobranca do plano", async 
   const start = app.indexOf("function exportBackupJson()");
   const end = app.indexOf("function dateStamp()", start);
   const backupSource = app.slice(start, end);
-  assert.match(backupSource, /schemaVersion: 2/);
-  assert.match(backupSource, /customers: state\.receivables\.customers/);
-  assert.match(backupSource, /receivables: state\.receivables\.receivables/);
-  assert.match(backupSource, /receivable_payments: state\.receivables\.payments/);
-  assert.doesNotMatch(backupSource, /billing|planPrice|monthlyPrice|subscriptionPrice/i);
+  assert.match(backupSource, /schemaVersion: 3/);
+  assert.match(backupSource, /companyId: tenantId\(\)/);
+  assert.match(backupSource, /customers: backupDocuments\(state\.receivables\.customers\)/);
+  assert.match(backupSource, /receivables: backupDocuments\(state\.receivables\.receivables\)/);
+  assert.match(backupSource, /receivable_payments: backupDocuments\(state\.receivables\.payments\)/);
+  assert.doesNotMatch(backupSource, /billing|planPrice|monthlyPrice|subscriptionPrice|passwordHash|sessionToken/i);
 });
 
 test("fluxo de recebimento nao grava entrada financeira nem venda", async () => {

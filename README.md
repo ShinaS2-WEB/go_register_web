@@ -14,6 +14,7 @@ O projeto funciona direto no navegador e usa Firebase/Firestore para sincronizar
 - Historico de vendas, caixa e movimentacoes de estoque.
 - Relatorios com filtros por periodo, dia especifico e mes.
 - Exportacao de relatorios em PDF, inventario em CSV e backup em JSON.
+- Backup JSON versionado e compativel com a recuperacao administrativa do APK.
 - Gerenciamento de usuarios com perfis de operador, administrador e administrador mestre.
 - Modulo opcional de clientes e contas a receber, liberado individualmente por empresa.
 - Tema claro, escuro e variacoes visuais configuraveis.

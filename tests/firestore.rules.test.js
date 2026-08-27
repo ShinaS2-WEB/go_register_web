@@ -58,6 +58,7 @@ test.before(async () => {
     await db.doc("companies/c").set({ isActive: true });
     await db.doc("companies/d").set({ isActive: true });
     await db.doc("companies/a/users/operator").set({ role: "OPERATOR", isActive: true, companyId: "a" });
+    await db.doc("companies/a/users/operator-restore").set({ role: "OPERATOR", isActive: true, companyId: "a" });
     await db.doc("companies/a/users/admin").set({ role: "ADMIN", isActive: true, companyId: "a" });
     await db.doc("companies/a/users/master").set({ role: "MASTER_ADMIN", isActive: true, companyId: "a" });
     await db.doc("companies/a/users/inactive").set({ role: "ADMIN", isActive: false, companyId: "a" });
@@ -187,6 +188,58 @@ test("dados de contas a receber ficam isolados por empresa", async () => {
   await assertSucceeds(companyADb.doc("companies/a/customers/customer-immutable").get());
   await assertFails(companyADb.collection("companies/b/customers").get());
   await assertFails(companyBDb.collection("companies/a/receivables").get());
+});
+
+test("recuperação histórica exige administrador, tenant correto e sessão temporária", async () => {
+  const now = Date.now();
+  const oldTimestamp = now - 365 * 86400000;
+  const operatorDb = env.authenticatedContext("operator-restore").firestore();
+  const adminDb = env.authenticatedContext("admin").firestore();
+  const session = {
+    empresa_id: "a",
+    companyId: "a",
+    createdAt: now,
+    expiresAt: now + 9 * 60 * 1000,
+    createdByUid: "admin",
+    backupCreatedAt: oldTimestamp
+  };
+
+  await assertFails(operatorDb.doc("companies/a/settings/backup_restore_operator-restore").set({
+    ...session,
+    createdByUid: "operator-restore"
+  }));
+  await assertSucceeds(adminDb.doc("companies/a/settings/backup_restore_admin").set(session));
+  await assertSucceeds(adminDb.doc("companies/a/customers/restored-old").set(
+    customerData("a", "restored-old", "operator", oldTimestamp)
+  ));
+  const restoredPaymentAt = oldTimestamp + 3600000;
+  await assertSucceeds(adminDb.doc("companies/a/receivables/restored-receivable").set({
+    ...receivableData("a", "restored-receivable", "restored-old", "operator", oldTimestamp),
+    outstandingAmountCents: 0,
+    status: "PAID",
+    lastPaymentId: "restored-payment",
+    lastPaymentAt: restoredPaymentAt,
+    updatedAt: restoredPaymentAt
+  }));
+  await assertSucceeds(adminDb.doc("companies/a/receivable_payments/restored-payment").set({
+    id: "restored-payment",
+    receivableId: "restored-receivable",
+    customerId: "restored-old",
+    amountCents: 3300,
+    paymentMethod: "PIX",
+    timestamp: restoredPaymentAt,
+    notes: "Pagamento recuperado",
+    createdByUid: "operator",
+    empresa_id: "a",
+    companyId: "a"
+  }));
+  await assertFails(adminDb.doc("companies/a/customers/restored-wrong-tenant").set(
+    customerData("b", "restored-wrong-tenant", "operator-b", oldTimestamp)
+  ));
+  await assertSucceeds(adminDb.doc("companies/a/settings/backup_restore_admin").delete());
+  await assertFails(adminDb.doc("companies/a/customers/restored-without-session").set(
+    customerData("a", "restored-without-session", "operator", oldTimestamp)
+  ));
 });
 
 test("pagamento só é aceito junto da redução exata do saldo", async () => {
