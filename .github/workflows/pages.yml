@@ -32,7 +32,7 @@ jobs:
           mkdir -p _site/assets _site/admin
           cp index.html app.js receivables-core.mjs styles.css _site/
           cp -R assets/. _site/assets/
-          cp admin/index.html admin/admin.js admin/admin.css admin/notifications.css _site/admin/
+          cp admin/index.html admin/admin.js admin/android-update-core.mjs admin/admin.css admin/notifications.css _site/admin/
           touch _site/.nojekyll
 
       - name: Configurar GitHub Pages

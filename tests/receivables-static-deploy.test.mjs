@@ -21,7 +21,7 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
   assert.match(index, /script-src 'self'/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=backup-recovery-v1/);
   assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
-  assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/admin\.css admin\/notifications\.css _site\/admin\//);
+  assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/android-update-core\.mjs admin\/admin\.css admin\/notifications\.css _site\/admin\//);
   assert.doesNotMatch(workflow, /cp -R admin/);
   assert.match(workflow, /npm run test:receivables/);
   assert.ok(JSON.parse(firebaseJson).hosting.ignore.includes("**/tests/**"));

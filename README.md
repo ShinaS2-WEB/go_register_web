@@ -1,5 +1,8 @@
 # GO REGISTER Web
 
+Consulte [ATUALIZACAO_APK.md](ATUALIZACAO_APK.md) para publicar uma nova versão do
+aplicativo com segurança pelo painel mestre.
+
 GO REGISTER Web e um sistema de ponto de venda e gestao comercial criado para pequenos negocios que precisam controlar vendas, caixa, estoque, usuarios e relatorios em uma interface simples e responsiva.
 
 O projeto funciona direto no navegador e usa Firebase/Firestore para sincronizar os dados em tempo real.

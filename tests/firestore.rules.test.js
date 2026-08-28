@@ -45,6 +45,24 @@ function receivableData(companyId, receivableId, customerId, uid, now = Date.now
   };
 }
 
+function androidUpdateData(uid, now = Date.now(), overrides = {}) {
+  return {
+    schemaVersion: 1,
+    packageName: "com.lucas.goregister",
+    latestVersionCode: 9,
+    minimumVersionCode: 8,
+    latestVersionName: "1.8",
+    apkUrl: "https://github.com/ShinaS2-WEB/go_Register_apk/releases/download/v1.8/GO_REGISTER.apk",
+    sha256: "A".repeat(64),
+    releaseNotes: "Atualizador automático",
+    publishedAt: now,
+    updatedAt: now,
+    updatedByUid: uid,
+    enabled: true,
+    ...overrides
+  };
+}
+
 test.before(async () => {
   env = await initializeTestEnvironment({
     projectId: "go-register-rules-test",
@@ -151,6 +169,22 @@ test("platform admin administra raiz e cadastro global, mas não lê private_set
   await assertFails(db.doc("companies/a/private_settings/cancellation").get());
   await assertSucceeds(db.doc("companies/a").update({ name: "administrada pela plataforma" }));
   await assertSucceeds(db.doc("platform_admins/other").set({ isActive: true }));
+});
+
+test("metadados do APK são públicos para leitura, mas somente a plataforma publica", async () => {
+  const platformDb = env.authenticatedContext("platform").firestore();
+  const operatorDb = env.authenticatedContext("operator").firestore();
+  const publicDb = env.unauthenticatedContext().firestore();
+  const reference = platformDb.doc("public_config/android_update");
+  const now = Date.now();
+
+  await assertFails(operatorDb.doc("public_config/android_update").set(androidUpdateData("operator", now)));
+  await assertFails(reference.set(androidUpdateData("platform", now, {apkUrl: "https://example.com/app.apk"})));
+  await assertFails(reference.set(androidUpdateData("platform", now, {unexpected: true})));
+  await assertSucceeds(reference.set(androidUpdateData("platform", now)));
+  await assertSucceeds(publicDb.doc("public_config/android_update").get());
+  await assertFails(publicDb.collection("public_config").get());
+  await assertFails(reference.delete());
 });
 
 test("dívida de compatibilidade Spark: caixa e movimentos ainda aceitam escrita direta", async () => {
