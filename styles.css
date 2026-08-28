@@ -948,6 +948,19 @@ body.dark .report-kpi {
   min-width: min(360px, 100%);
 }
 
+.inventory-filters-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+  align-items: end;
+  justify-content: stretch;
+}
+
+.inventory-filters-toolbar .search,
+.inventory-filters-toolbar .inventory-stock-filter {
+  width: 100%;
+  min-width: 0;
+}
+
 .grid {
   display: grid;
   gap: 16px;
@@ -1107,6 +1120,28 @@ tr:last-child td {
 .badge.warn {
   background: #fff2d8;
   color: var(--warning);
+}
+
+.stock-level {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.stock-level-value {
+  color: var(--text);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.stock-level--summary {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.stock-level--summary .stock-level-value {
+  font-size: 13px;
 }
 
 .pos-layout {
@@ -1835,6 +1870,10 @@ body.dark .transaction-row .amount.minus {
 }
 
 @media (max-width: 620px) {
+  .inventory-filters-toolbar {
+    grid-template-columns: 1fr;
+  }
+
   .login-shell {
     align-items: start;
     padding: 28px 18px;

@@ -16,18 +16,21 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, ".github", "workflows", "firebase-deploy.yml"), "utf8"),
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
-  assert.match(index, /styles\.css\?v=all-notice-boxes-removed-v1/);
-  assert.match(index, /app\.js\?v=all-notice-boxes-removed-v1/);
+  assert.match(index, /styles\.css\?v=inventory-filters-inline-v1/);
+  assert.match(index, /app\.js\?v=professional-stock-labels-v1/);
   assert.match(index, /script-src 'self'/);
+  assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
+  assert.match(app, /\.\/stock-order-core\.mjs\?v=stock-level-filter-v1/);
   assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
+  assert.match(workflow, /cp cash-register-core\.mjs stock-order-core\.mjs _site\//);
   assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/admin\.css admin\/notifications\.css _site\/admin\//);
   assert.doesNotMatch(workflow, /cp -R admin/);
   assert.match(workflow, /npm run test:receivables/);
   assert.ok(JSON.parse(firebaseJson).hosting.ignore.includes("**/tests/**"));
   const scripts = JSON.parse(packageJson).scripts;
   assert.equal(scripts.test, "npm run test:functions && npm run test:receivables");
-  assert.equal(scripts["test:functions"], "node --test functions/tests/validation.test.js");
+  assert.equal(scripts["test:functions"], "node --test functions/tests/*.test.js");
   assert.equal(scripts["test:receivables"], "node --test tests/*.test.mjs admin/tests/*.test.cjs");
   assert.equal(scripts["test:emulator"], "node --test --test-concurrency=1 tests/firestore.rules.test.js");
   assert.equal(scripts["emulators:test"], "firebase emulators:exec --only firestore \"npm run test:emulator\"");
@@ -76,6 +79,39 @@ test("cada cliente possui acesso ao seu historico individual de pagamentos", asy
   assert.match(app, /openReceivableCustomerPaymentHistory\(button\.dataset\.receivableCustomerHistory\)/);
   assert.match(historySource, /receivablePaymentsForCustomer\(state\.receivables\.payments, customerId\)/);
   assert.match(historySource, /Dívida:/);
+});
+
+test("clientes podem ser removidos sem apagar o historico", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf("async function removeReceivableCustomer");
+  const end = app.indexOf("function openReceivableModal", start);
+  const removalSource = app.slice(start, end);
+
+  assert.match(app, /data-remove-receivable-customer=/);
+  assert.match(app, /removeReceivableCustomer\(button\.dataset\.removeReceivableCustomer\)/);
+  assert.match(removalSource, /pendingAccounts\.length/);
+  assert.match(removalSource, /name="confirmationName"/);
+  assert.match(removalSource, /normalizeName\(form\.get\("confirmationName"\)\) !== normalizeName\(customerName\)/);
+  assert.match(removalSource, /isActive: false/);
+  assert.doesNotMatch(removalSource, /deleteDoc/);
+});
+
+test("lancamento de conta pode ser cancelado com validacao no backend", async () => {
+  const [app, backend] = await Promise.all([
+    readFile(path.join(root, "app.js"), "utf8"),
+    readFile(path.join(root, "functions", "index.js"), "utf8"),
+  ]);
+  const start = app.indexOf("async function cancelReceivable(receivableKey)");
+  const end = app.indexOf("function openReceivablePaymentHistory", start);
+  const cancellationSource = app.slice(start, end);
+
+  assert.match(app, /data-cancel-receivable=/);
+  assert.match(app, /\["CANCELLED", "Canceladas"\]/);
+  assert.match(cancellationSource, /requestCancellationPassword\(\)/);
+  assert.match(cancellationSource, /cancelReceivableCallable/);
+  assert.match(backend, /exports\.cancelReceivable = onCall/);
+  assert.match(backend, /verifyCancellationPasswordHash\(password, storedHash\)/);
+  assert.match(backend, /status: "CANCELLED"/);
 });
 
 test("filtro todas agrupa as dividas por cliente", async () => {

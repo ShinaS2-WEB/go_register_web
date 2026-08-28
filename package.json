@@ -4,7 +4,7 @@
   "scripts": {
     "start": "node scripts/serve.js",
     "test": "npm run test:functions && npm run test:receivables",
-    "test:functions": "node --test functions/tests/validation.test.js",
+    "test:functions": "node --test functions/tests/*.test.js",
     "test:receivables": "node --test tests/*.test.mjs admin/tests/*.test.cjs",
     "test:rules": "node --test tests/firestore.rules.test.js",
     "test:emulator": "node --test --test-concurrency=1 tests/firestore.rules.test.js",
