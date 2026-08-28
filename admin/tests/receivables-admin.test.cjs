@@ -34,7 +34,7 @@ test("empresa nunca configurada não provisiona o adicional por padrão", () => 
 });
 
 test("limpeza e exclusão tratam dados pessoais sem apagar a licença por engano", () => {
-  const operational = sourceBetween(adminSource, "const operationalCollections=", ";\n");
+  const operational = sourceBetween(adminSource, "const operationalCollections=", ";");
   for (const collectionName of ["customers", "receivables", "receivable_payments"]) {
     assert.match(operational, new RegExp(`"${collectionName}"`));
   }

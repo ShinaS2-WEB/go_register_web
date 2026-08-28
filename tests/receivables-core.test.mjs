@@ -4,12 +4,14 @@ import assert from "node:assert/strict";
 import {
   applyReceivablePayment,
   filterReceivables,
+  groupReceivablesByCustomer,
   localDateInputToMillis,
   matchesExistingPayment,
   millisToLocalDateInput,
   parseMoneyToCents,
   receivableDisplayStatus,
   receivablePaymentFingerprint,
+  receivablePaymentsForCustomer,
   receivablesEntitlementAccess,
   receivablesSummary,
 } from "../receivables-core.mjs";
@@ -127,4 +129,39 @@ test("fingerprint de retry muda quando os dados financeiros mudam", () => {
   assert.equal(receivablePaymentFingerprint(base), receivablePaymentFingerprint({ ...base }));
   assert.notEqual(receivablePaymentFingerprint(base), receivablePaymentFingerprint({ ...base, amountCents: 2_001 }));
   assert.notEqual(receivablePaymentFingerprint(base), receivablePaymentFingerprint({ ...base, companyId: "empresa-b" }));
+});
+
+test("historico individual separa e ordena os pagamentos de cada cliente", () => {
+  const payments = [
+    { id: "p-1", customerId: "cliente-a", receivableId: "conta-1", amountCents: 1000, timestamp: 100 },
+    { id: "p-2", customerId: "cliente-b", receivableId: "conta-2", amountCents: 2000, timestamp: 300 },
+    { id: "p-3", customer_id: "cliente-a", receivableId: "conta-3", amountCents: 3000, timestamp: 200 },
+  ];
+
+  assert.deepEqual(
+    receivablePaymentsForCustomer(payments, "cliente-a").map((payment) => payment.id),
+    ["p-3", "p-1"],
+  );
+  assert.deepEqual(payments.map((payment) => payment.id), ["p-1", "p-2", "p-3"]);
+  assert.deepEqual(receivablePaymentsForCustomer(payments, ""), []);
+});
+
+test("filtro de todas agrupa as dividas por cliente em ordem alfabetica", () => {
+  const receivables = [
+    { id: "ana-mais-recente", customerId: "cliente-ana", customerName: "Ana" },
+    { id: "bruno-unica", customerId: "cliente-bruno", customerName: "Bruno" },
+    { id: "ana-anterior", customerId: "cliente-ana", customerName: "Ana" },
+    { id: "alvaro-unica", customerId: "cliente-alvaro", customerName: "Álvaro" },
+  ];
+
+  assert.deepEqual(
+    groupReceivablesByCustomer(receivables).map((receivable) => receivable.id),
+    ["alvaro-unica", "ana-mais-recente", "ana-anterior", "bruno-unica"],
+  );
+  assert.deepEqual(receivables.map((receivable) => receivable.id), [
+    "ana-mais-recente",
+    "bruno-unica",
+    "ana-anterior",
+    "alvaro-unica",
+  ]);
 });

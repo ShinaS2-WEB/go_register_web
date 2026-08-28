@@ -85,6 +85,32 @@ export function matchesExistingPayment(payment, expected) {
     && String(payment?.createdByUid || "") === String(expected?.createdByUid || "");
 }
 
+export function receivablePaymentsForCustomer(payments, customerId) {
+  const expectedCustomerId = String(customerId ?? "").trim();
+  if (!expectedCustomerId) return [];
+  return (payments || [])
+    .filter((payment) => String(payment?.customerId ?? payment?.customer_id ?? "") === expectedCustomerId)
+    .slice()
+    .sort((left, right) => (timestampMillis(right?.timestamp) || 0) - (timestampMillis(left?.timestamp) || 0));
+}
+
+export function groupReceivablesByCustomer(receivables) {
+  const groups = new Map();
+  (receivables || []).forEach((receivable) => {
+    const customerId = String(receivable?.customerId ?? receivable?.customer_id ?? "").trim();
+    const customerName = String(receivable?.customerName ?? receivable?.customer_name ?? "Cliente").trim() || "Cliente";
+    const key = customerId || `name:${customerName.toLocaleLowerCase("pt-BR")}`;
+    if (!groups.has(key)) groups.set(key, { key, customerName, receivables: [] });
+    groups.get(key).receivables.push(receivable);
+  });
+  return [...groups.values()]
+    .sort((left, right) => left.customerName.localeCompare(right.customerName, "pt-BR", {
+      sensitivity: "base",
+      numeric: true,
+    }) || left.key.localeCompare(right.key))
+    .flatMap((group) => group.receivables);
+}
+
 export function receivablePaymentFingerprint(payment) {
   const canonical = JSON.stringify([
     String(payment?.companyId || ""),

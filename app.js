@@ -16,18 +16,28 @@ import {
   deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, reauthenticateWithCredential, EmailAuthProvider, updatePassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-functions.js";
 import {
   applyReceivablePayment,
   filterReceivables,
+  groupReceivablesByCustomer,
   localDateInputToMillis,
   matchesExistingPayment,
   millisToLocalDateInput,
   parseMoneyToCents,
   receivableDisplayStatus,
   receivablePaymentFingerprint,
+  receivablePaymentsForCustomer,
   receivablesEntitlementAccess,
   receivablesSummary,
-} from "./receivables-core.mjs?v=backup-recovery-v1";
+} from "./receivables-core.mjs?v=customer-debt-order-v1";
+import { calculateExpectedRegisterBalance } from "./cash-register-core.mjs?v=all-payment-methods-v1";
+import {
+  PRODUCT_STOCK_LEVEL,
+  compareProductsByStockLevelAndName,
+  productMatchesStockFilter,
+  productStockLevel,
+} from "./stock-order-core.mjs?v=stock-level-filter-v1";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDaNbVpvkGov4vtabbk-bAWOpb7nDpmzrA",
@@ -41,6 +51,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
+const functions = getFunctions(app, "southamerica-east1");
+const cancelReceivableCallable = httpsCallable(functions, "cancelReceivable");
 const root = document.querySelector("#app");
 
 const collections = {
@@ -117,6 +129,7 @@ const state = {
     reportsPeriod: "all",
     reportsDate: new Date().toISOString().slice(0, 10),
     reportsMonth: new Date().getMonth(),
+    inventoryStockLevel: "ALL",
     receivablesStatus: "OPEN",
     receivablesSearch: "",
   },
@@ -1082,19 +1095,24 @@ async function verifyCancellationPassword(password) {
   return await verifyPassword(password, storedHash);
 }
 
-async function requestCancellationAuthorization() {
+async function requestCancellationPassword() {
   if (!cancellationPasswordHash()) {
     toast("Senha de cancelamento não configurada. Defina-a no site de administração.");
-    return false;
+    return "";
   }
   const form = await openFormDialog("Autorizar Cancelamento", `
     <p class="muted">Informe a senha de cancelamento para confirmar esta operacao.</p>
     ${input("password", "Senha de cancelamento", "", "password")}
   `, "Cancelar transacao", "cancel", "danger");
-  if (!form) return false;
-  const allowed = await verifyCancellationPassword(form.get("password"));
+  if (!form) return "";
+  const password = String(form.get("password") || "");
+  const allowed = await verifyCancellationPassword(password);
   if (!allowed) toast("Senha de cancelamento invalida.");
-  return allowed;
+  return allowed ? password : "";
+}
+
+async function requestCancellationAuthorization() {
+  return Boolean(await requestCancellationPassword());
 }
 
 async function logout() {
@@ -1176,8 +1194,6 @@ function renderView() {
       </div>
       <div>${actions}</div>
     </header>
-    ${combinedFirebaseError() ? `<div class="notice error-notice">${icon("error")} ${escapeHtml(combinedFirebaseError())}</div>` : ""}
-    ${!isReady() ? `<div class="notice">${icon("sync")} Carregando dados...</div>` : ""}
     ${views[state.view]()}
   `;
 }
@@ -1275,7 +1291,9 @@ function renderDashboard() {
     ? (todayCents === 0 ? "Sem variacao em relacao a ontem" : "Sem base de comparacao ontem")
     : `${comparison >= 0 ? "↑" : "↓"} ${Math.abs(comparison).toFixed(1)}% em relacao a ontem`;
   const todayCount = transactions.filter((item) => !item.isCancelled && item.timestamp >= todayStart && item.timestamp < todayEnd).length;
-  const lowStock = state.data.products.filter((item) => productTracksStock(item) && Number(item.stockQuantity) <= Number(item.minStockThreshold));
+  const lowStock = state.data.products
+    .filter((item) => productStockLevel(item) !== PRODUCT_STOCK_LEVEL.ACCEPTABLE)
+    .sort(compareProductsByStockLevelAndName);
 
   return `
     <section class="section">
@@ -1304,12 +1322,18 @@ function renderDashboard() {
         <section class="panel low-stock-panel">
           <h2>Produtos com Baixo Estoque</h2>
           <div class="transactions">
-            ${lowStock.map((item) => `
-              <div class="transaction-row">
-                <div><strong>${escapeHtml(item.name)}</strong><div class="muted">EAN: ${escapeHtml(item.barcode || "-")}</div></div>
-                <strong class="amount minus">${Number(item.stockQuantity) || 0} ${escapeHtml(item.unit || "UN")}</strong>
-              </div>
-            `).join("") || `<p class="muted">Nenhum produto com estoque baixo.</p>`}
+            ${lowStock.map((item) => {
+              const stock = productStockDetails(item);
+              return `
+                <div class="transaction-row">
+                  <div><strong>${escapeHtml(item.name)}</strong><div class="muted">EAN: ${escapeHtml(item.barcode || "-")}</div></div>
+                  <div class="stock-level stock-level--summary">
+                    <span class="badge ${stock.badgeClass}">${escapeHtml(stock.label)}</span>
+                    <strong class="stock-level-value">${escapeHtml(stock.quantityLabel)}</strong>
+                  </div>
+                </div>
+              `;
+            }).join("") || `<p class="muted">Nenhum produto com estoque baixo.</p>`}
           </div>
         </section>
       </div>
@@ -1400,24 +1424,36 @@ function renderPos() {
 }
 
 function renderInventory() {
-  const rows = state.data.products.filter((item) => `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()));
+  const rows = state.data.products
+    .filter((item) => `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()))
+    .filter((item) => productMatchesStockFilter(item, state.filters.inventoryStockLevel))
+    .sort(compareProductsByStockLevelAndName);
+  const stockFilter = `
+    <label class="field inventory-stock-filter"><span>Nível de estoque</span><span class="input-wrap">${icon("filter_list")}<select id="inventoryStockLevelFilter">
+      ${[["ALL", "Todos"], ["ACCEPTABLE", "Produto em estoque"], ["LOW", "Estoque baixo"], ["OUT", "Sem estoque"], ["UNLIMITED", "Estoque ilimitado"]].map(([value, label]) => `<option value="${value}" ${state.filters.inventoryStockLevel === value ? "selected" : ""}>${label}</option>`).join("")}
+    </select></span></label>
+  `;
   return tableSection("inventorySearch", ["Produto", "Categoria", "Fornecedor", "Preco", "Estoque", ""], rows.map((item) => {
     const category = state.data.categories.find((cat) => Number(cat.id) === Number(item.categoryId));
     const supplier = state.data.suppliers.find((sup) => Number(sup.id) === Number(item.supplierId));
-    const tracksStock = productTracksStock(item);
-    const low = tracksStock && Number(item.stockQuantity) <= Number(item.minStockThreshold);
-    const stockLabel = tracksStock ? `${Number(item.stockQuantity) || 0} ${escapeHtml(item.unit || "UN")}` : "∞";
+    const stock = productStockDetails(item);
     return `
       <tr>
         <td><strong>${escapeHtml(item.name)}</strong><div class="muted">EAN: ${escapeHtml(item.barcode || "-")}</div></td>
         <td>${escapeHtml(category?.name || "-")}</td>
         <td>${escapeHtml(supplier?.name || "-")}</td>
         <td>${money.format(item.sellingPrice || 0)}</td>
-        <td><span class="badge ${low ? "warn" : "good"}">${stockLabel}</span></td>
+        <td>
+          <div class="stock-level">
+            <span class="badge ${stock.badgeClass}">${escapeHtml(stock.label)}</span>
+            <strong class="stock-level-value">${escapeHtml(stock.quantityLabel)}</strong>
+            ${stock.minimumLabel ? `<small class="muted">Mínimo: ${escapeHtml(stock.minimumLabel)}</small>` : ""}
+          </div>
+        </td>
         <td><button class="icon-btn" data-edit-product="${item.id}" title="Editar">${icon("edit")}</button><button class="icon-btn" data-delete-product="${item.id}" title="Excluir">${icon("delete")}</button></td>
       </tr>
     `;
-  }).join(""));
+  }).join(""), stockFilter, "inventory-filters-toolbar");
 }
 
 function renderStockHistory() {
@@ -1443,11 +1479,12 @@ function renderStockHistory() {
   }).join(""));
 }
 
-function tableSection(searchId, headers, rows) {
+function tableSection(searchId, headers, rows, extraFilters = "", toolbarClass = "") {
   return `
     <section class="section">
-      <div class="toolbar">
+      <div class="toolbar ${toolbarClass}">
         <label class="field search"><span>Pesquisar</span><span class="input-wrap">${icon("search")}<input id="${searchId}" value="${escapeHtml(state.search)}" placeholder="Pesquisar..." /></span></label>
+        ${extraFilters}
       </div>
       <div class="panel table-wrap">
         <table>
@@ -1513,7 +1550,12 @@ function registerReport(register) {
   const cashExits = registerExits
     .filter((item) => paymentMethodGroup(item.paymentMethod) === "CASH")
     .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  const expected = (Number(register.initialBalance) || 0) + cashSales + cashEntries - cashExits;
+  const expected = calculateExpectedRegisterBalance({
+    initialBalance: register.initialBalance,
+    sales,
+    entries,
+    exits,
+  });
   const closing = register.closingBalance == null ? null : Number(register.closingBalance);
   return { sales, entries, exits, cashSales, cashEntries, cashExits, expected, closing, difference: closing == null ? null : closing - expected };
 }
@@ -1715,17 +1757,20 @@ function formatReceivableDueDate(value) {
 
 function renderReceivables() {
   const access = accountsReceivableAccess();
-  if (!access.visible) return `<section class="section"><div class="notice">Modulo adicional indisponivel para esta empresa.</div></section>`;
+  if (!access.visible) return `<section class="section"></section>`;
 
   const search = String(state.filters.receivablesSearch || "").trim().toLocaleLowerCase("pt-BR");
   const filteredByStatus = filterReceivables(
     state.receivables.receivables,
     state.filters.receivablesStatus,
   );
-  const accounts = filteredByStatus.filter((receivable) => {
+  const matchingAccounts = filteredByStatus.filter((receivable) => {
     if (!search) return true;
     return `${receivable.customerName || ""} ${receivable.description || ""}`.toLocaleLowerCase("pt-BR").includes(search);
   });
+  const accounts = state.filters.receivablesStatus === "ALL"
+    ? groupReceivablesByCustomer(matchingAccounts)
+    : matchingAccounts;
   const customers = state.receivables.customers
     .filter((customer) => customer.isActive !== false)
     .filter((customer) => !search || `${customer.name || ""} ${customer.phone || ""} ${customer.document || ""}`.toLocaleLowerCase("pt-BR").includes(search));
@@ -1733,12 +1778,6 @@ function renderReceivables() {
 
   return `
     <section class="section receivables-page">
-      ${access.canCreate ? "" : `
-        <div class="notice receivables-plan-notice">
-          ${icon("lock_clock")}
-          <div><strong>Adicional vencido ou suspenso</strong><br><span>O histórico permanece disponível e você pode receber contas existentes, mas não pode cadastrar novos clientes ou novas contas.</span></div>
-        </div>
-      `}
       <div class="grid receivables-metrics">
         <article class="panel metric primary"><span>Total a receber</span><strong>${money.format(summary.outstandingAmountCents / 100)}</strong><small>${state.receivables.receivables.filter((item) => ["OPEN", "PARTIAL", "OVERDUE"].includes(receivableDisplayStatus(item))).length} conta(s) pendente(s)</small></article>
         <article class="panel metric tertiary"><span>Total atrasado</span><strong>${money.format(summary.overdueAmountCents / 100)}</strong><small>Saldo com vencimento anterior a hoje</small></article>
@@ -1750,7 +1789,7 @@ function renderReceivables() {
           <div><h2>Contas a receber</h2><p class="muted">Contas cadastradas manualmente, sem ligação automática com vendas.</p></div>
           <div class="receivables-filters">
             <label class="field"><span>Situação</span><span class="input-wrap">${icon("filter_list")}<select id="receivablesStatusFilter">
-              ${[["ALL", "Todas"], ["OPEN", "Em aberto"], ["PARTIAL", "Parciais"], ["PAID", "Pagas"], ["OVERDUE", "Atrasadas"]].map(([value, label]) => `<option value="${value}" ${state.filters.receivablesStatus === value ? "selected" : ""}>${label}</option>`).join("")}
+              ${[["ALL", "Todas"], ["OPEN", "Em aberto"], ["PARTIAL", "Parciais"], ["PAID", "Pagas"], ["OVERDUE", "Atrasadas"], ["CANCELLED", "Canceladas"]].map(([value, label]) => `<option value="${value}" ${state.filters.receivablesStatus === value ? "selected" : ""}>${label}</option>`).join("")}
             </select></span></label>
             <label class="field receivables-search"><span>Buscar</span><span class="input-wrap">${icon("search")}<input id="receivablesSearch" value="${escapeHtml(state.filters.receivablesSearch)}" placeholder="Cliente ou descrição" /></span></label>
           </div>
@@ -1775,6 +1814,7 @@ function renderReceivables() {
                   ${canReceive ? `<button class="icon-btn" data-receivable-payment="${key}" title="Registrar pagamento">${icon("payments")}</button>` : ""}
                   <button class="icon-btn" data-receivable-history="${key}" title="Histórico de pagamentos">${icon("history")}</button>
                   ${hasPhone && Number(receivable.outstandingAmountCents) > 0 && status !== "CANCELLED" ? `<button class="icon-btn" data-receivable-whatsapp="${key}" title="Enviar lembrete pelo WhatsApp">${icon("chat")}</button>` : ""}
+                  ${access.canCollect && status !== "CANCELLED" ? `<button class="icon-btn" data-cancel-receivable="${key}" title="Cancelar lançamento">${icon("cancel")}</button>` : ""}
                 </td>
               </tr>`;
             }).join("") || `<tr><td colspan="7" class="muted">Nenhuma conta encontrada para este filtro.</td></tr>`}</tbody>
@@ -1785,7 +1825,7 @@ function renderReceivables() {
       <div class="panel">
         <div class="toolbar"><div><h2>Clientes</h2><p class="muted">Cadastro utilizado somente pelo módulo de contas a receber.</p></div></div>
         <div class="table-wrap"><table class="receivables-customers-table">
-          <thead><tr><th>Nome</th><th>Telefone</th><th>Documento</th><th>Observações</th><th></th></tr></thead>
+          <thead><tr><th>Nome</th><th>Telefone</th><th>Documento</th><th>Observações</th><th>Ações</th></tr></thead>
           <tbody>${customers.map((customer) => {
             const key = escapeHtml(docKey(customer));
             return `<tr>
@@ -1793,7 +1833,10 @@ function renderReceivables() {
               <td>${escapeHtml(customer.phone || "-")}</td>
               <td>${escapeHtml(customer.document || "-")}</td>
               <td>${escapeHtml(customer.notes || "-")}</td>
-              <td>${access.canCreate ? `<button class="icon-btn" data-receivable-customer-account="${key}" title="Criar conta manual">${icon("post_add")}</button><button class="icon-btn" data-edit-receivable-customer="${key}" title="Editar cliente">${icon("edit")}</button>` : ""}</td>
+              <td class="receivables-row-actions">
+                <button class="btn secondary receivable-customer-history-button" data-receivable-customer-history="${key}" title="Histórico individual de pagamentos" aria-label="Histórico individual de pagamentos de ${escapeHtml(customer.name || "cliente")}">${icon("history")} Histórico</button>
+                ${access.canCreate ? `<button class="icon-btn" data-receivable-customer-account="${key}" title="Criar conta manual">${icon("post_add")}</button><button class="icon-btn" data-edit-receivable-customer="${key}" title="Editar cliente">${icon("edit")}</button><button class="icon-btn" data-remove-receivable-customer="${key}" title="Remover cliente">${icon("delete")}</button>` : ""}
+              </td>
             </tr>`;
           }).join("") || `<tr><td colspan="5" class="muted">Nenhum cliente encontrado.</td></tr>`}</tbody>
         </table></div>
@@ -2138,6 +2181,10 @@ function bindViewEvents() {
     state.filters.cashHistoryDate = event.target.value;
     renderApp();
   });
+  document.querySelector("#inventoryStockLevelFilter")?.addEventListener("change", (event) => {
+    state.filters.inventoryStockLevel = event.target.value;
+    renderApp();
+  });
   document.querySelector("#receivablesStatusFilter")?.addEventListener("change", (event) => {
     state.filters.receivablesStatus = event.target.value;
     renderApp();
@@ -2168,7 +2215,10 @@ function bindViewEvents() {
   document.querySelectorAll("[data-receivable-customer-account]").forEach((button) => button.addEventListener("click", () => openReceivableModal(button.dataset.receivableCustomerAccount)));
   document.querySelectorAll("[data-receivable-payment]").forEach((button) => button.addEventListener("click", () => openReceivablePaymentModal(button.dataset.receivablePayment)));
   document.querySelectorAll("[data-receivable-history]").forEach((button) => button.addEventListener("click", () => openReceivablePaymentHistory(button.dataset.receivableHistory)));
+  document.querySelectorAll("[data-receivable-customer-history]").forEach((button) => button.addEventListener("click", () => openReceivableCustomerPaymentHistory(button.dataset.receivableCustomerHistory)));
   document.querySelectorAll("[data-receivable-whatsapp]").forEach((button) => button.addEventListener("click", () => openReceivableWhatsapp(button.dataset.receivableWhatsapp)));
+  document.querySelectorAll("[data-cancel-receivable]").forEach((button) => button.addEventListener("click", () => cancelReceivable(button.dataset.cancelReceivable)));
+  document.querySelectorAll("[data-remove-receivable-customer]").forEach((button) => button.addEventListener("click", () => removeReceivableCustomer(button.dataset.removeReceivableCustomer)));
   document.querySelector("#discountInput")?.addEventListener("input", (event) => {
     state.discount = Math.max(0, parseDecimal(event.target.value));
   });
@@ -2204,6 +2254,44 @@ function findById(items, id) {
 function productTracksStock(product) {
   if (typeof product?.hasStockControl === "boolean") return product.hasStockControl;
   return product?.tracksStock !== false;
+}
+
+function productStockDetails(product) {
+  const unit = String(product?.unit || "UN");
+  if (!productTracksStock(product)) {
+    return {
+      label: "ESTOQUE ILIMITADO",
+      badgeClass: "good",
+      quantityLabel: "Sem limite",
+      minimumLabel: "",
+    };
+  }
+
+  const quantity = Number(product?.stockQuantity) || 0;
+  const minimum = Number(product?.minStockThreshold) || 0;
+  const level = productStockLevel(product);
+  if (level === PRODUCT_STOCK_LEVEL.OUT) {
+    return {
+      label: "SEM ESTOQUE",
+      badgeClass: "bad",
+      quantityLabel: `0 ${unit}`,
+      minimumLabel: `${minimum} ${unit}`,
+    };
+  }
+  if (level === PRODUCT_STOCK_LEVEL.LOW) {
+    return {
+      label: "ESTOQUE BAIXO",
+      badgeClass: "warn",
+      quantityLabel: `${quantity} ${unit}`,
+      minimumLabel: `${minimum} ${unit}`,
+    };
+  }
+  return {
+    label: "PRODUTO EM ESTOQUE",
+    badgeClass: "good",
+    quantityLabel: `${quantity} ${unit}`,
+    minimumLabel: `${minimum} ${unit}`,
+  };
 }
 
 function docKey(item, fallbackId = null) {
@@ -2542,6 +2630,47 @@ function openReceivableCustomerModal(customerKey = "") {
   });
 }
 
+async function removeReceivableCustomer(customerKey) {
+  const customer = findReceivableCustomer(customerKey);
+  if (!customer || customer.isActive === false) return toast("Cliente nao encontrado.");
+  if (!accountsReceivableAccess().canCreate) return toast("O modulo nao permite remover clientes neste momento.");
+
+  const customerId = String(customer.id || customer.docId || customerKey);
+  const linkedAccounts = state.receivables.receivables.filter((receivable) =>
+    String(receivable.customerId || "") === customerId
+    && receivableDisplayStatus(receivable) !== "CANCELLED"
+  );
+  const pendingAccounts = linkedAccounts.filter((receivable) =>
+    ["OPEN", "PARTIAL", "OVERDUE"].includes(receivableDisplayStatus(receivable))
+  );
+  const pendingBalanceCents = pendingAccounts.reduce(
+    (total, receivable) => total + Math.max(0, Number(receivable.outstandingAmountCents) || 0),
+    0,
+  );
+  const customerName = String(customer.name || "Cliente").trim();
+  const form = await openFormDialog("Remover cliente", `
+    <p><strong>Atenção:</strong> o cliente será removido da lista e não poderá receber novas contas.</p>
+    ${pendingAccounts.length ? `<p class="muted">Existem ${pendingAccounts.length} conta(s) pendente(s), com saldo de <strong>${escapeHtml(money.format(pendingBalanceCents / 100))}</strong>. Elas e todo o histórico serão preservados.</p>` : `<p class="muted">As contas e os pagamentos anteriores serão preservados.</p>`}
+    <label class="field"><span>Digite <strong>${escapeHtml(customerName)}</strong> para confirmar</span><span class="input-wrap"><input name="confirmationName" autocomplete="off" required /></span></label>
+  `, "Remover cliente", "delete", "danger");
+  if (!form) return;
+
+  const normalizeName = (value) => String(value || "").normalize("NFKC").trim().toLocaleLowerCase("pt-BR");
+  if (normalizeName(form.get("confirmationName")) !== normalizeName(customerName)) {
+    toast("O nome informado nao confere. O cliente nao foi removido.");
+    return;
+  }
+
+  await runAction(
+    () => updateDoc(tenantDocument(receivablesCollections.customers, docKey(customer, customerKey)), {
+      isActive: false,
+      updatedAt: Date.now(),
+      updatedByUid: receivableActorUid(),
+    }),
+    "Cliente removido.",
+  );
+}
+
 function openReceivableModal(preselectedCustomerId = "") {
   try {
     requireReceivablesCreationAccess();
@@ -2559,9 +2688,6 @@ function openReceivableModal(preselectedCustomerId = "") {
   const id = randomUuid();
   const today = millisToLocalDateInput(Date.now());
   openModal("Nova conta manual", `
-    <div class="notice receivables-scope-notice compact">
-      ${icon("info")}<span>Esta conta controla somente a dívida. Ela não cria uma venda e não movimenta o caixa.</span>
-    </div>
     <div class="form-grid">
       ${select("customerId", "Cliente *", customers.map((customer) => [customer.id || customer.docId, customer.name]), preselectedCustomerId)}
       <label class="field"><span>Valor da conta *</span><span class="input-wrap">${icon("payments")}<input name="amount" inputmode="decimal" placeholder="0,00" required /></span></label>
@@ -2621,9 +2747,6 @@ function openReceivablePaymentModal(receivableKey) {
   openModal("Registrar pagamento", `
     <div class="receivable-payment-heading">
       <span>Saldo atual</span><strong>${money.format(currentOutstanding / 100)}</strong>
-    </div>
-    <div class="notice receivables-scope-notice compact">
-      ${icon("info")}<span>Este pagamento reduz a dívida, mas não cria entrada no caixa. Se o valor entrou no caixa, registre uma Entrada Manual separadamente.</span>
     </div>
     <div class="form-grid">
       <label class="field"><span>Valor recebido *</span><span class="input-wrap">${icon("payments")}<input name="amount" inputmode="decimal" value="${escapeHtml(formatMoneyCentsInput(currentOutstanding))}" required /></span></label>
@@ -2722,6 +2845,24 @@ function openReceivablePaymentModal(receivableKey) {
   });
 }
 
+async function cancelReceivable(receivableKey) {
+  const receivable = findReceivable(receivableKey);
+  if (!receivable) return toast("Conta nao encontrada.");
+  if (receivableDisplayStatus(receivable) === "CANCELLED") return toast("Este lancamento ja esta cancelado.");
+
+  const password = await requestCancellationPassword();
+  if (!password) return;
+
+  await runAction(async () => {
+    const result = await cancelReceivableCallable({
+      companyId: tenantId(),
+      receivableId: docKey(receivable, receivableKey),
+      password,
+    });
+    if (result.data?.alreadyCancelled) throw new Error("Este lancamento ja estava cancelado.");
+  }, "Lancamento cancelado.");
+}
+
 function openReceivablePaymentHistory(receivableKey) {
   const receivable = findReceivable(receivableKey);
   if (!receivable) return toast("Conta nao encontrada.");
@@ -2737,6 +2878,32 @@ function openReceivablePaymentHistory(receivableKey) {
             <div><strong>${money.format((Number(payment.amountCents) || 0) / 100)}</strong><span>${escapeHtml(paymentMethodLabel(payment.paymentMethod))}</span></div>
             <div><span>${escapeHtml(dateTime.format(new Date(normalizeTimestamp(payment.timestamp))))}</span>${payment.notes ? `<small>${escapeHtml(payment.notes)}</small>` : ""}</div>
           </article>`).join("") || `<p class="muted">Nenhum pagamento registrado para esta conta.</p>`}
+        </div>
+        <footer><button class="btn secondary" type="button" data-close-modal>Fechar</button></footer>
+      </section>
+    </div>
+  `;
+  document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", closeModal));
+}
+
+function openReceivableCustomerPaymentHistory(customerKey) {
+  const customer = findReceivableCustomer(customerKey);
+  if (!customer) return toast("Cliente nao encontrado.");
+  const customerId = String(customer.id || customer.docId || "");
+  const payments = receivablePaymentsForCustomer(state.receivables.payments, customerId);
+  document.querySelector("#modalRoot").innerHTML = `
+    <div class="modal-backdrop">
+      <section class="modal receivable-history-modal">
+        <header><div><h2>Histórico individual de pagamentos</h2><p class="muted">${escapeHtml(customer.name || "Cliente")}</p></div><button class="icon-btn" type="button" data-close-modal>${icon("close")}</button></header>
+        <div class="receivable-history-list">
+          ${payments.map((payment) => {
+            const receivable = findReceivable(payment.receivableId);
+            const accountDescription = receivable?.description || "Conta não identificada";
+            return `<article class="receivable-history-row">
+              <div><strong>${money.format((Number(payment.amountCents) || 0) / 100)}</strong><span>${escapeHtml(paymentMethodLabel(payment.paymentMethod))}</span><small>Dívida: ${escapeHtml(accountDescription)}</small></div>
+              <div><span>${escapeHtml(dateTime.format(new Date(normalizeTimestamp(payment.timestamp))))}</span>${payment.notes ? `<small>${escapeHtml(payment.notes)}</small>` : ""}</div>
+            </article>`;
+          }).join("") || `<p class="muted">Nenhum pagamento registrado para este cliente.</p>`}
         </div>
         <footer><button class="btn secondary" type="button" data-close-modal>Fechar</button></footer>
       </section>
