@@ -17,14 +17,14 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
   assert.match(index, /styles\.css\?v=inventory-filters-inline-v1/);
-  assert.match(index, /app\.js\?v=professional-stock-labels-v1/);
+  assert.match(index, /app\.js\?v=backup-recovery-stock-v2/);
   assert.match(index, /script-src 'self'/);
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
   assert.match(app, /\.\/stock-order-core\.mjs\?v=stock-level-filter-v1/);
   assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
   assert.match(workflow, /cp cash-register-core\.mjs stock-order-core\.mjs _site\//);
-  assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/admin\.css admin\/notifications\.css _site\/admin\//);
+  assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/android-update-core\.mjs admin\/admin\.css admin\/notifications\.css _site\/admin\//);
   assert.doesNotMatch(workflow, /cp -R admin/);
   assert.match(workflow, /npm run test:receivables/);
   assert.ok(JSON.parse(firebaseJson).hosting.ignore.includes("**/tests/**"));
@@ -128,11 +128,12 @@ test("backup operacional inclui o modulo sem dados de cobranca do plano", async 
   const start = app.indexOf("function exportBackupJson()");
   const end = app.indexOf("function dateStamp()", start);
   const backupSource = app.slice(start, end);
-  assert.match(backupSource, /schemaVersion: 2/);
-  assert.match(backupSource, /customers: state\.receivables\.customers/);
-  assert.match(backupSource, /receivables: state\.receivables\.receivables/);
-  assert.match(backupSource, /receivable_payments: state\.receivables\.payments/);
-  assert.doesNotMatch(backupSource, /billing|planPrice|monthlyPrice|subscriptionPrice/i);
+  assert.match(backupSource, /schemaVersion: 3/);
+  assert.match(backupSource, /companyId: tenantId\(\)/);
+  assert.match(backupSource, /customers: backupDocuments\(state\.receivables\.customers\)/);
+  assert.match(backupSource, /receivables: backupDocuments\(state\.receivables\.receivables\)/);
+  assert.match(backupSource, /receivable_payments: backupDocuments\(state\.receivables\.payments\)/);
+  assert.doesNotMatch(backupSource, /billing|planPrice|monthlyPrice|subscriptionPrice|passwordHash|sessionToken/i);
 });
 
 test("fluxo de recebimento nao grava entrada financeira nem venda", async () => {
@@ -176,4 +177,13 @@ test("modal bloqueia fechamento enquanto o envio esta em andamento", async () =>
   assert.match(modalSource, /dataset\.submitting = "true"/);
   assert.match(modalSource, /closeButtons\.forEach\(\(button\) => \{ button\.disabled = true; \}\)/);
   assert.match(modalSource, /#modalForm\[data-submitting='true'\]/);
+});
+
+test("pagina de contas nao exibe o aviso permanente de controle manual", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf("function renderReceivables()");
+  const end = app.indexOf("function reportSales", start);
+  const receivablesPageSource = app.slice(start, end);
+  assert.doesNotMatch(receivablesPageSource, /Controle manual de dívidas/);
+  assert.doesNotMatch(receivablesPageSource, /registre também uma Entrada Manual/);
 });

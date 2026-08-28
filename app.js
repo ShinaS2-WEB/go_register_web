@@ -3271,31 +3271,38 @@ function exportBackupJson() {
   }
   const backup = {
     app: "GO REGISTER",
-    schemaVersion: 2,
-    exportedAt: new Date().toISOString(),
-    moduleSchemas: {
-      accountsReceivable: receivablesDataReady() && accountsReceivableAccess().visible ? 1 : null,
-    },
+    schemaVersion: 3,
+    companyId: tenantId(),
+    companyName: state.company?.name || "Empresa",
+    exportedAt: Date.now(),
     collections: {
-      products: state.data.products,
-      sales: state.data.sales,
-      categories: state.data.categories,
-      suppliers: state.data.suppliers,
-      cash_registers: state.data.registers,
-      financial_entries: state.data.entries,
-      financial_exits: state.data.exits,
-      users: state.data.users.map((user) => ({ ...user, passwordHash: user.passwordHash ? "[redacted]" : "", sessionToken: user.sessionToken ? "[redacted]" : "" })),
-      stock_movements: state.data.stockMovements,
-      settings: state.data.settings.map((setting) => ({ ...setting, passwordHash: setting.passwordHash ? "[redacted]" : "" })),
+      products: backupDocuments(state.data.products),
+      sales: backupDocuments(state.data.sales),
+      categories: backupDocuments(state.data.categories),
+      suppliers: backupDocuments(state.data.suppliers),
+      cash_registers: backupDocuments(state.data.registers.filter((register) => String(register.docId || register.id) !== "active_register")),
+      financial_entries: backupDocuments(state.data.entries),
+      financial_exits: backupDocuments(state.data.exits),
+      stock_movements: backupDocuments(state.data.stockMovements),
       ...(receivablesDataReady() && accountsReceivableAccess().visible ? {
-        customers: state.receivables.customers,
-        receivables: state.receivables.receivables,
-        receivable_payments: state.receivables.payments,
+        customers: backupDocuments(state.receivables.customers),
+        receivables: backupDocuments(state.receivables.receivables),
+        receivable_payments: backupDocuments(state.receivables.payments),
       } : {}),
     },
   };
   downloadBlob(JSON.stringify(backup, null, 2), `backup_go_register_${dateStamp()}.json`, "application/json");
   toast("Backup exportado.");
+}
+
+function backupDocuments(items) {
+  return items.map((item) => {
+    const id = item.docId ?? item.id;
+    if (id === undefined || id === null || String(id).trim() === "") {
+      throw new Error("Um registro sem identificador impediu a criação do backup.");
+    }
+    return { id: String(id), data: item };
+  });
 }
 
 function dateStamp() {

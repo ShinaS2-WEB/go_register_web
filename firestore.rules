@@ -91,6 +91,63 @@ service cloud.firestore {
         && boundedDocumentId(data.companyId)
         && data.companyId == companyId;
     }
+    function validAndroidUpdate(data) {
+      return data.keys().hasOnly([
+          'schemaVersion', 'packageName', 'latestVersionCode', 'minimumVersionCode',
+          'latestVersionName', 'apkUrl', 'sha256', 'releaseNotes', 'publishedAt',
+          'updatedAt', 'updatedByUid', 'enabled'])
+        && data.schemaVersion == 1
+        && data.packageName == 'com.lucas.goregister'
+        && data.latestVersionCode is int
+        && data.latestVersionCode > 0
+        && data.latestVersionCode <= 2147483647
+        && data.minimumVersionCode is int
+        && data.minimumVersionCode > 0
+        && data.minimumVersionCode <= data.latestVersionCode
+        && data.latestVersionName is string
+        && data.latestVersionName.size() > 0
+        && data.latestVersionName.size() <= 50
+        && data.apkUrl is string
+        && data.apkUrl.size() <= 2048
+        && data.apkUrl.matches('https://github[.]com/ShinaS2-WEB/go_Register_apk/releases/download/.+[.]apk')
+        && data.sha256 is string
+        && (data.sha256 == '' || data.sha256.matches('[0-9A-Fa-f]{64}'))
+        && data.releaseNotes is string
+        && data.releaseNotes.size() <= 5000
+        && data.publishedAt is int
+        && data.publishedAt > 0
+        && data.publishedAt <= request.time.toMillis() + 300000
+        && data.updatedAt == data.publishedAt
+        && boundedUid(data.updatedByUid)
+        && data.updatedByUid == request.auth.uid
+        && data.enabled is bool;
+    }
+    function restoreSessionId() {
+      return 'backup_restore_' + request.auth.uid;
+    }
+    function validRestoreSession(data, companyId) {
+      return data.keys().hasOnly(['empresa_id', 'companyId', 'createdAt', 'expiresAt',
+          'createdByUid', 'backupCreatedAt'])
+        && strictTenant(data, companyId)
+        && data.createdByUid == request.auth.uid
+        && data.createdAt is int
+        && data.createdAt >= request.time.toMillis() - 300000
+        && data.createdAt <= request.time.toMillis() + 300000
+        && data.expiresAt is int
+        && data.expiresAt > request.time.toMillis()
+        && data.expiresAt <= request.time.toMillis() + 600000
+        && data.backupCreatedAt is int
+        && data.backupCreatedAt > 0
+        && data.backupCreatedAt <= request.time.toMillis() + 300000;
+    }
+    function activeRestoreSession(companyId) {
+      let sessionId = restoreSessionId();
+      let sessionPath = /databases/$(database)/documents/companies/$(companyId)/settings/$(sessionId);
+      return companyAdmin(companyId)
+        && exists(sessionPath)
+        && get(sessionPath).data.createdByUid == request.auth.uid
+        && get(sessionPath).data.expiresAt >= request.time.toMillis();
+    }
     function recentClientTimestamp(value) {
       return value is int
         && value >= request.time.toMillis() - 86400000
@@ -204,6 +261,24 @@ service cloud.firestore {
         && boundedUid(data.createdByUid)
         && data.createdByUid == request.auth.uid;
     }
+    function validRestoredPayment(data, companyId, paymentId) {
+      return data.keys().hasOnly(['id', 'receivableId', 'customerId', 'amountCents',
+          'paymentMethod', 'timestamp', 'notes', 'createdByUid', 'empresa_id', 'companyId'])
+        && strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == paymentId
+        && boundedDocumentId(data.receivableId)
+        && boundedDocumentId(data.customerId)
+        && boundedPositiveMoneyCents(data.amountCents)
+        && data.paymentMethod is string
+        && data.paymentMethod in ['CASH', 'PIX', 'DEBIT_CARD', 'CREDIT_CARD']
+        && data.timestamp is int
+        && data.timestamp >= 0
+        && data.timestamp <= request.time.toMillis() + 300000
+        && data.notes is string
+        && data.notes.size() <= 500
+        && boundedUid(data.createdByUid);
+    }
     function receivablePath(companyId, receivableId) {
       return /databases/$(database)/documents/companies/$(companyId)/receivables/$(receivableId);
     }
@@ -256,6 +331,15 @@ service cloud.firestore {
       allow delete: if platformAdmin() && request.auth.uid != uid;
     }
 
+    match /public_config/{documentId} {
+      allow get: if documentId == 'android_update';
+      allow list: if false;
+      allow create, update: if documentId == 'android_update'
+        && platformAdmin()
+        && validAndroidUpdate(request.resource.data);
+      allow delete: if false;
+    }
+
     match /companies/{companyId} {
       allow read: if resource.data.isActive == true || platformAdmin();
       allow create, update, delete: if platformAdmin();
@@ -275,12 +359,22 @@ service cloud.firestore {
 
       match /settings/{documentId} {
         allow read: if platformAdmin() || companyUser(companyId);
-        allow create, update: if platformAdmin() || (documentId != 'cancellation'
-          && companyAdmin(companyId)
-          && belongsToCompany(request.resource.data, companyId));
-        allow delete: if platformAdmin() || (documentId != 'cancellation'
-          && companyAdmin(companyId)
-          && belongsToCompany(resource.data, companyId));
+        allow create, update: if platformAdmin()
+          || (documentId == restoreSessionId()
+            && companyAdmin(companyId)
+            && validRestoreSession(request.resource.data, companyId))
+          || (documentId != 'cancellation'
+            && !documentId.matches('backup_restore_.*')
+            && companyAdmin(companyId)
+            && belongsToCompany(request.resource.data, companyId));
+        allow delete: if platformAdmin()
+          || (documentId == restoreSessionId()
+            && companyAdmin(companyId)
+            && belongsToCompany(resource.data, companyId))
+          || (documentId != 'cancellation'
+            && !documentId.matches('backup_restore_.*')
+            && companyAdmin(companyId)
+            && belongsToCompany(resource.data, companyId));
       }
 
       match /company_profile/{documentId} {
@@ -316,6 +410,8 @@ service cloud.firestore {
         allow read: if platformAdmin()
           || (companyUser(companyId) && receivablesProvisioned(companyId));
         allow create: if platformAdmin()
+          || (activeRestoreSession(companyId)
+            && validCustomer(request.resource.data, companyId, customerId))
           || (companyUser(companyId)
             && receivablesCreationEnabled(companyId)
             && validCustomer(request.resource.data, companyId, customerId)
@@ -324,6 +420,8 @@ service cloud.firestore {
             && request.resource.data.createdByUid == request.auth.uid
             && request.resource.data.updatedByUid == request.auth.uid);
         allow update: if platformAdmin()
+          || (activeRestoreSession(companyId)
+            && validCustomer(request.resource.data, companyId, customerId))
           || (companyUser(companyId)
             && receivablesCreationEnabled(companyId)
             && validCustomer(request.resource.data, companyId, customerId)
@@ -342,6 +440,9 @@ service cloud.firestore {
         allow read: if platformAdmin()
           || (companyUser(companyId) && receivablesProvisioned(companyId));
         allow create: if platformAdmin()
+          || (activeRestoreSession(companyId)
+            && validReceivable(request.resource.data, companyId, receivableId)
+            && existsAfter(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)))
           || (companyUser(companyId)
             && receivablesCreationEnabled(companyId)
             && validReceivable(request.resource.data, companyId, receivableId)
@@ -356,6 +457,9 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.isActive == true
             && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.name == request.resource.data.customerName);
         allow update: if platformAdmin()
+          || (activeRestoreSession(companyId)
+            && validReceivable(request.resource.data, companyId, receivableId)
+            && existsAfter(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)))
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
             && validReceivablePaymentUpdate(companyId, receivableId));
@@ -366,10 +470,17 @@ service cloud.firestore {
         allow read: if platformAdmin()
           || (companyUser(companyId) && receivablesProvisioned(companyId));
         allow create: if platformAdmin()
+          || (activeRestoreSession(companyId)
+            && validRestoredPayment(request.resource.data, companyId, paymentId)
+            && existsAfter(receivablePath(companyId, request.resource.data.receivableId)))
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
             && validPaymentCreate(companyId, paymentId));
-        allow update, delete: if platformAdmin();
+        allow update: if platformAdmin()
+          || (activeRestoreSession(companyId)
+            && validRestoredPayment(request.resource.data, companyId, paymentId)
+            && existsAfter(receivablePath(companyId, request.resource.data.receivableId)));
+        allow delete: if platformAdmin();
       }
 
       match /{collectionName}/{documentId} {

@@ -117,8 +117,26 @@ test("pagamento exige criação e redução de saldo na mesma operação", () =>
     "O estado final da conta deve ser validado uma vez, pela atualização.");
   const paymentRules = sourceBetween(rulesSource, "match /receivable_payments/{paymentId}", "match /{collectionName}/{documentId}");
   assert.match(paymentRules, /allow create:[\s\S]*receivablesProvisioned/);
-  assert.match(paymentRules, /allow update, delete: if platformAdmin\(\)/);
+  assert.match(paymentRules, /allow update: if platformAdmin\(\)[\s\S]*activeRestoreSession/);
+  assert.match(paymentRules, /allow delete: if platformAdmin\(\)/);
   assert.match(rulesSource, /function currentPaymentTimestamp[\s\S]*request\.time\.toMillis\(\) - 300000[\s\S]*request\.time\.toMillis\(\) \+ 300000/);
+});
+
+test("recuperação usa sessão curta, exclusiva do administrador e do próprio tenant", () => {
+  const sessionValidation = sourceBetween(rulesSource, "function restoreSessionId", "function recentClientTimestamp");
+  assert.match(sessionValidation, /'backup_restore_' \+ request\.auth\.uid/);
+  assert.match(sessionValidation, /companyAdmin\(companyId\)/);
+  assert.match(sessionValidation, /expiresAt <= request\.time\.toMillis\(\) \+ 600000/);
+  assert.match(sessionValidation, /createdByUid == request\.auth\.uid/);
+
+  const settingsRules = sourceBetween(rulesSource, "match /settings/{documentId}", "match /company_profile/{documentId}");
+  assert.match(settingsRules, /documentId == restoreSessionId\(\)/);
+  assert.match(settingsRules, /validRestoreSession\(request\.resource\.data, companyId\)/);
+  assert.match(settingsRules, /!documentId\.matches\('backup_restore_\.\*'\)/);
+
+  for (const collection of ["customers", "receivables", "receivable_payments"]) {
+    assert.match(rulesSource, new RegExp(`match /${collection.replace("_", "_")}.*?[\\s\\S]*activeRestoreSession`, "m"));
+  }
 });
 
 test("ids, uids e valores financeiros possuem limites seguros", () => {
