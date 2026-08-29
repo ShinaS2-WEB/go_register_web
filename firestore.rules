@@ -69,6 +69,28 @@ service cloud.firestore {
         && boundedUid(data.updatedByUid)
         && data.updatedByUid == request.auth.uid;
     }
+    function validMainSubscription(data) {
+      return data.keys().hasOnly(['planName', 'status', 'priceCents', 'billingCycle',
+          'nextDueAt', 'graceUntil', 'notes', 'updatedAt', 'updatedByUid'])
+        && data.planName is string
+        && data.planName.size() > 0
+        && data.planName.size() <= 80
+        && data.status is string
+        && data.status in ['TRIAL', 'ACTIVE', 'PAST_DUE', 'SUSPENDED', 'CANCELLED']
+        && data.priceCents is int
+        && data.priceCents >= 0
+        && data.priceCents <= 99999999999
+        && data.billingCycle is string
+        && data.billingCycle in ['MONTHLY', 'YEARLY', 'ONE_TIME']
+        && (data.nextDueAt == null || (data.nextDueAt is int && data.nextDueAt >= 0))
+        && (data.graceUntil == null || (data.graceUntil is int && data.graceUntil >= 0))
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.updatedAt is int
+        && data.updatedAt >= 0
+        && boundedUid(data.updatedByUid)
+        && data.updatedByUid == request.auth.uid;
+    }
     function boundedDocumentId(value) {
       return value is string
         && value.size() > 0
@@ -460,11 +482,11 @@ service cloud.firestore {
       }
 
       match /billing/{moduleId} {
-        allow read: if moduleId == 'accounts_receivable' && platformAdmin();
-        allow create, update: if moduleId == 'accounts_receivable'
-          && platformAdmin()
-          && validBilling(request.resource.data);
-        allow delete: if moduleId == 'accounts_receivable' && platformAdmin();
+        allow read: if moduleId in ['accounts_receivable', 'main_subscription'] && platformAdmin();
+        allow create, update: if platformAdmin()
+          && ((moduleId == 'accounts_receivable' && validBilling(request.resource.data))
+            || (moduleId == 'main_subscription' && validMainSubscription(request.resource.data)));
+        allow delete: if moduleId in ['accounts_receivable', 'main_subscription'] && platformAdmin();
       }
 
       match /customers/{customerId} {

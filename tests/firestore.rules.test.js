@@ -82,6 +82,21 @@ function auditEventData(companyId, eventId, uid, now = Date.now(), overrides = {
   };
 }
 
+function mainSubscriptionData(uid, now = Date.now(), overrides = {}) {
+  return {
+    planName: "Plano Principal",
+    status: "ACTIVE",
+    priceCents: 4990,
+    billingCycle: "MONTHLY",
+    nextDueAt: now + 86400000,
+    graceUntil: now + 172800000,
+    notes: "Assinatura de teste",
+    updatedAt: now,
+    updatedByUid: uid,
+    ...overrides
+  };
+}
+
 test.before(async () => {
   env = await initializeTestEnvironment({
     projectId: "go-register-rules-test",
@@ -553,6 +568,18 @@ test("cobrança do plano é privada e respeita formato e limites", async () => {
     updatedAt: Date.now(),
     updatedByUid: "platform"
   }));
+});
+
+test("assinatura principal é privada e somente a plataforma pode administrá-la", async () => {
+  const operatorDb = env.authenticatedContext("operator").firestore();
+  const platformDb = env.authenticatedContext("platform").firestore();
+  const reference = platformDb.doc("companies/a/billing/main_subscription");
+
+  await assertFails(operatorDb.doc("companies/a/billing/main_subscription").get());
+  await assertSucceeds(reference.set(mainSubscriptionData("platform")));
+  await assertFails(reference.set(mainSubscriptionData("platform", Date.now(), { status: "INVALID" })));
+  await assertFails(reference.set(mainSubscriptionData("operator")));
+  await assertSucceeds(reference.update({ status: "PAST_DUE", updatedAt: Date.now(), updatedByUid: "platform" }));
 });
 
 test("identidade, tenant e campos de criação do cliente são imutáveis", async () => {
