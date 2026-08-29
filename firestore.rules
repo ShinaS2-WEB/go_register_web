@@ -244,7 +244,7 @@ service cloud.firestore {
             && boundedDocumentId(data.lastPaymentId)
             && data.lastPaymentAt > 0));
     }
-    function validReceivableCancellationUpdate(companyId, receivableId) {
+    function validReceivableCancellationUpdate() {
       return resource.data.status in ['OPEN', 'PARTIAL']
         && request.resource.data.status == 'CANCELLED'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -483,7 +483,7 @@ service cloud.firestore {
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
             && (validReceivablePaymentUpdate(companyId, receivableId)
-              || validReceivableCancellationUpdate(companyId, receivableId)));
+              || validReceivableCancellationUpdate()));
         allow delete: if platformAdmin()
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
