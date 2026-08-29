@@ -63,6 +63,25 @@ function androidUpdateData(uid, now = Date.now(), overrides = {}) {
   };
 }
 
+function auditEventData(companyId, eventId, uid, now = Date.now(), overrides = {}) {
+  return {
+    id: eventId,
+    empresa_id: companyId,
+    companyId,
+    action: "SALE_CREATED",
+    entityType: "sale",
+    entityId: "sale-1",
+    description: "Venda concluída",
+    amountCents: 3300,
+    actorUid: uid,
+    actorName: "Usuário Teste",
+    actorRole: "OPERATOR",
+    timestamp: now,
+    source: "WEB",
+    ...overrides
+  };
+}
+
 test.before(async () => {
   env = await initializeTestEnvironment({
     projectId: "go-register-rules-test",
@@ -155,6 +174,36 @@ test("compatibilidade Spark: administrador atualiza usuários e estoque, mas aud
   await assertSucceeds(db.doc("companies/a/users/operator").update({ role: "MASTER_ADMIN" }));
   await assertSucceeds(db.doc("companies/a/products/p").update({ stockQuantity: 3 }));
   await assertFails(db.doc("companies/a/audit_logs/fake").set({ action: "FORGED" }));
+});
+
+test("auditoria aceita autoria legítima, restringe leitura e permanece imutável", async () => {
+  const operatorDb = env.authenticatedContext("operator").firestore();
+  const otherOperatorDb = env.authenticatedContext("operator-restore").firestore();
+  const adminDb = env.authenticatedContext("admin").firestore();
+  const eventRef = operatorDb.doc("companies/a/audit_logs/audit-valid");
+
+  await assertSucceeds(eventRef.set(auditEventData("a", "audit-valid", "operator")));
+  await assertFails(otherOperatorDb.doc("companies/a/audit_logs/audit-valid").get());
+  await assertSucceeds(adminDb.doc("companies/a/audit_logs/audit-valid").get());
+  await assertFails(adminDb.doc("companies/a/audit_logs/audit-valid").update({ description: "Alterada" }));
+  await assertFails(adminDb.doc("companies/a/audit_logs/audit-valid").delete());
+});
+
+test("auditoria bloqueia falsificação de autor, empresa, horário e campos extras", async () => {
+  const db = env.authenticatedContext("operator").firestore();
+
+  await assertFails(db.doc("companies/a/audit_logs/spoof-author").set(
+    auditEventData("a", "spoof-author", "admin")
+  ));
+  await assertFails(db.doc("companies/a/audit_logs/wrong-tenant").set(
+    auditEventData("b", "wrong-tenant", "operator")
+  ));
+  await assertFails(db.doc("companies/a/audit_logs/future-event").set(
+    auditEventData("a", "future-event", "operator", Date.now() + 600000)
+  ));
+  await assertFails(db.doc("companies/a/audit_logs/secret-field").set(
+    auditEventData("a", "secret-field", "operator", Date.now(), { password: "não pode" })
+  ));
 });
 
 test("dívida de compatibilidade: usuário ou empresa inativos perdem acesso às subcoleções", async () => {
