@@ -1035,6 +1035,17 @@ body.dark .report-kpi {
   min-width: 0;
 }
 
+.internal-alerts { padding: 16px; }
+.internal-alerts__heading { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.internal-alerts__heading h2 { margin: 0; font-size: 20px; }
+.internal-alerts__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.internal-alert { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-left-width: 4px; border-radius: 12px; background: var(--surface); }
+.internal-alert strong, .internal-alert small { display: block; }
+.internal-alert small { margin-top: 3px; color: var(--muted); }
+.internal-alert--critical { border-left-color: var(--danger); }
+.internal-alert--warning { border-left-color: #f59e0b; }
+.internal-alert--info { border-left-color: var(--primary); }
+
 .low-stock-panel {
   padding: 14px;
 }

@@ -582,6 +582,25 @@ test("assinatura principal é privada e somente a plataforma pode administrá-la
   await assertSucceeds(reference.update({ status: "PAST_DUE", updatedAt: Date.now(), updatedByUid: "platform" }));
 });
 
+test("empresa lê somente o aviso seguro da assinatura", async () => {
+  const operatorDb = env.authenticatedContext("operator").firestore();
+  const platformDb = env.authenticatedContext("platform").firestore();
+  const reference = platformDb.doc("companies/a/entitlements/main_subscription");
+  const payload = {
+    status: "ACTIVE",
+    nextDueAt: Date.now() + 604800000,
+    graceUntil: null,
+    noticeDays: 7,
+    updatedAt: Date.now(),
+    updatedByUid: "platform"
+  };
+
+  await assertSucceeds(reference.set(payload));
+  await assertSucceeds(operatorDb.doc("companies/a/entitlements/main_subscription").get());
+  await assertFails(operatorDb.doc("companies/a/entitlements/main_subscription").update({ noticeDays: 60 }));
+  await assertFails(reference.set({ ...payload, noticeDays: 61 }));
+});
+
 test("identidade, tenant e campos de criação do cliente são imutáveis", async () => {
   const db = env.authenticatedContext("operator").firestore();
   const customerRef = db.doc("companies/a/customers/customer-immutable");

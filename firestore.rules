@@ -71,7 +71,7 @@ service cloud.firestore {
     }
     function validMainSubscription(data) {
       return data.keys().hasOnly(['planName', 'status', 'priceCents', 'billingCycle',
-          'nextDueAt', 'graceUntil', 'notes', 'updatedAt', 'updatedByUid'])
+          'nextDueAt', 'graceUntil', 'noticeDays', 'notes', 'updatedAt', 'updatedByUid'])
         && data.planName is string
         && data.planName.size() > 0
         && data.planName.size() <= 80
@@ -84,8 +84,25 @@ service cloud.firestore {
         && data.billingCycle in ['MONTHLY', 'YEARLY', 'ONE_TIME']
         && (data.nextDueAt == null || (data.nextDueAt is int && data.nextDueAt >= 0))
         && (data.graceUntil == null || (data.graceUntil is int && data.graceUntil >= 0))
+        && (!data.keys().hasAny(['noticeDays'])
+          || (data.noticeDays is int && data.noticeDays >= 0 && data.noticeDays <= 60))
         && data.notes is string
         && data.notes.size() <= 1000
+        && data.updatedAt is int
+        && data.updatedAt >= 0
+        && boundedUid(data.updatedByUid)
+        && data.updatedByUid == request.auth.uid;
+    }
+    function validMainSubscriptionEntitlement(data) {
+      return data.keys().hasOnly(['status', 'nextDueAt', 'graceUntil', 'noticeDays',
+          'updatedAt', 'updatedByUid'])
+        && data.status is string
+        && data.status in ['TRIAL', 'ACTIVE', 'PAST_DUE', 'SUSPENDED', 'CANCELLED']
+        && (data.nextDueAt == null || (data.nextDueAt is int && data.nextDueAt >= 0))
+        && (data.graceUntil == null || (data.graceUntil is int && data.graceUntil >= 0))
+        && data.noticeDays is int
+        && data.noticeDays >= 0
+        && data.noticeDays <= 60
         && data.updatedAt is int
         && data.updatedAt >= 0
         && boundedUid(data.updatedByUid)
@@ -473,12 +490,13 @@ service cloud.firestore {
       }
 
       match /entitlements/{moduleId} {
-        allow read: if moduleId == 'accounts_receivable'
+        allow read: if moduleId in ['accounts_receivable', 'main_subscription']
           && (platformAdmin() || companyUser(companyId));
-        allow create, update: if moduleId == 'accounts_receivable'
-          && platformAdmin()
-          && validEntitlement(request.resource.data);
-        allow delete: if moduleId == 'accounts_receivable' && platformAdmin();
+        allow create, update: if platformAdmin()
+          && ((moduleId == 'accounts_receivable' && validEntitlement(request.resource.data))
+            || (moduleId == 'main_subscription'
+              && validMainSubscriptionEntitlement(request.resource.data)));
+        allow delete: if moduleId in ['accounts_receivable', 'main_subscription'] && platformAdmin();
       }
 
       match /billing/{moduleId} {
