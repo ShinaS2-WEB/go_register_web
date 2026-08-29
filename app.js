@@ -12,6 +12,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  writeBatch,
   runTransaction,
   deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
@@ -1814,7 +1815,7 @@ function renderReceivables() {
                   ${canReceive ? `<button class="icon-btn" data-receivable-payment="${key}" title="Registrar pagamento">${icon("payments")}</button>` : ""}
                   <button class="icon-btn" data-receivable-history="${key}" title="Histórico de pagamentos">${icon("history")}</button>
                   ${hasPhone && Number(receivable.outstandingAmountCents) > 0 && status !== "CANCELLED" ? `<button class="icon-btn" data-receivable-whatsapp="${key}" title="Enviar lembrete pelo WhatsApp">${icon("chat")}</button>` : ""}
-                  ${access.canCollect && ["OPEN", "PARTIAL", "OVERDUE"].includes(status) ? `<button class="btn secondary compact" data-cancel-receivable="${key}" title="Cancelar lançamento">${icon("cancel")} Cancelar</button>` : ""}
+                  ${access.canCollect && ["OPEN", "PARTIAL", "OVERDUE", "PAID", "CANCELLED"].includes(status) ? `<button class="btn secondary compact" data-cancel-receivable="${key}" title="${status === "CANCELLED" ? "Apagar do histórico" : "Cancelar lançamento"}">${icon("cancel")} ${status === "CANCELLED" ? "Apagar" : "Cancelar"}</button>` : ""}
                 </td>
               </tr>`;
             }).join("") || `<tr><td colspan="7" class="muted">Nenhuma conta encontrada para este filtro.</td></tr>`}</tbody>
@@ -2849,34 +2850,28 @@ async function cancelReceivable(receivableKey) {
   const receivable = findReceivable(receivableKey);
   if (!receivable) return toast("Conta nao encontrada.");
   const status = receivableDisplayStatus(receivable);
-  if (!["OPEN", "PARTIAL", "OVERDUE"].includes(status)) {
-    return toast("Somente contas em aberto ou parciais podem ser canceladas.");
+  if (!["OPEN", "PARTIAL", "OVERDUE", "PAID", "CANCELLED"].includes(status)) {
+    return toast("Esta conta não pode ser cancelada ou apagada.");
   }
 
   const receivableId = docKey(receivable, receivableKey);
-  const payments = state.receivables.payments.filter(
-    (payment) => String(payment.receivableId) === String(receivableId)
-  );
-  const canDeleteFromHistory = payments.length === 0
-    && Number(receivable.outstandingAmountCents) === Number(receivable.originalAmountCents)
-    && !String(receivable.lastPaymentId || "")
-    && Number(receivable.lastPaymentAt || 0) === 0;
-  let deleteFromHistory = false;
+  const alreadyCancelled = status === "CANCELLED";
+  let deleteFromHistory = alreadyCancelled;
 
-  if (canDeleteFromHistory) {
+  if (alreadyCancelled) {
+    const confirmed = await openConfirmModal(
+      "Apagar lançamento",
+      "Deseja apagar definitivamente esta conta e todos os pagamentos vinculados do histórico do cliente?",
+      "Apagar do histórico"
+    );
+    if (!confirmed) return;
+  } else {
     deleteFromHistory = await openChoiceModal(
       "Cancelar lançamento",
-      "Deseja apagar esta dívida do histórico do cliente? Se escolher NÃO, ela continuará visível como cancelada.",
+      "Deseja apagar esta conta e seus pagamentos do histórico? Se escolher NÃO, ela continuará visível como cancelada e poderá ser apagada depois.",
       "Não, manter cancelada",
       "Sim, apagar"
     );
-  } else {
-    const confirmed = await openConfirmModal(
-      "Cancelar lançamento",
-      "Esta conta possui pagamentos e não pode ser apagada. Deseja mantê-la no histórico como cancelada?",
-      "Manter cancelada"
-    );
-    if (!confirmed) return;
   }
 
   const password = await requestCancellationPassword();
@@ -2884,15 +2879,27 @@ async function cancelReceivable(receivableKey) {
 
   await runAction(async () => {
     const reference = tenantDocument(collections.receivables, receivableId);
+    if (!alreadyCancelled) {
+      await updateDoc(reference, {
+        status: "CANCELLED",
+        updatedAt: Date.now(),
+        updatedByUid: receivableActorUid(),
+      });
+    }
     if (deleteFromHistory) {
-      await deleteDoc(reference);
+      const paymentSnapshot = await getDocs(query(
+        tenantCollection(collections.payments),
+        where("receivableId", "==", receivableId)
+      ));
+      if (paymentSnapshot.size > 498) {
+        throw new Error("Esta conta possui pagamentos demais para exclusão automática.");
+      }
+      const batch = writeBatch(db);
+      paymentSnapshot.docs.forEach((paymentDocument) => batch.delete(paymentDocument.ref));
+      batch.delete(reference);
+      await batch.commit();
       return;
     }
-    await updateDoc(reference, {
-      status: "CANCELLED",
-      updatedAt: Date.now(),
-      updatedByUid: receivableActorUid(),
-    });
   }, deleteFromHistory ? "Lançamento apagado do histórico." : "Lançamento mantido como cancelado.");
 }
 

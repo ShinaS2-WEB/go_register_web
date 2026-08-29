@@ -17,7 +17,7 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
   assert.match(index, /styles\.css\?v=inventory-filters-inline-v1/);
-  assert.match(index, /app\.js\?v=receivable-cancellation-pos-order-v1/);
+  assert.match(index, /app\.js\?v=receivable-history-delete-v1/);
   assert.match(index, /script-src 'self'/);
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
@@ -106,9 +106,13 @@ test("lancamento pode ser cancelado ou apagado sem depender do Blaze", async () 
   assert.match(app, /\["CANCELLED", "Canceladas"\]/);
   assert.match(cancellationSource, /requestCancellationPassword\(\)/);
   assert.match(cancellationSource, /openChoiceModal\(/);
-  assert.match(cancellationSource, /deleteDoc\(reference\)/);
+  assert.match(cancellationSource, /writeBatch\(db\)/);
+  assert.match(cancellationSource, /paymentSnapshot\.docs\.forEach/);
+  assert.match(cancellationSource, /batch\.delete\(reference\)/);
   assert.match(cancellationSource, /status: "CANCELLED"/);
   assert.match(cancellationSource, /updateDoc\(reference/);
+  assert.match(cancellationSource, /alreadyCancelled/);
+  assert.match(cancellationSource, /"PAID", "CANCELLED"/);
   assert.doesNotMatch(app, /cancelReceivableCallable/);
 });
 

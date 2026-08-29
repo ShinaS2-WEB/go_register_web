@@ -245,7 +245,7 @@ service cloud.firestore {
             && data.lastPaymentAt > 0));
     }
     function validReceivableCancellationUpdate() {
-      return resource.data.status in ['OPEN', 'PARTIAL']
+      return resource.data.status in ['OPEN', 'PARTIAL', 'PAID']
         && request.resource.data.status == 'CANCELLED'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'status', 'updatedAt', 'updatedByUid'])
@@ -253,16 +253,18 @@ service cloud.firestore {
         && request.resource.data.updatedAt >= resource.data.updatedAt
         && request.resource.data.updatedByUid == request.auth.uid;
     }
-    function deletableUnpaidReceivable(data, companyId, receivableId) {
+    function deletableCancelledReceivable(data, companyId, receivableId) {
       return strictTenant(data, companyId)
         && boundedDocumentId(data.id)
         && data.id == receivableId
-        && data.status in ['OPEN', 'CANCELLED']
-        && boundedPositiveMoneyCents(data.originalAmountCents)
-        && data.outstandingAmountCents is int
-        && data.outstandingAmountCents == data.originalAmountCents
-        && data.lastPaymentId == ''
-        && data.lastPaymentAt == 0;
+        && data.status == 'CANCELLED';
+    }
+    function deletablePaymentWithReceivable(data, companyId, paymentId) {
+      return strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == paymentId
+        && boundedDocumentId(data.receivableId)
+        && !existsAfter(receivablePath(companyId, data.receivableId));
     }
     function validPayment(data, companyId, paymentId) {
       return data.keys().hasOnly(['id', 'receivableId', 'customerId', 'amountCents',
@@ -487,7 +489,7 @@ service cloud.firestore {
         allow delete: if platformAdmin()
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
-            && deletableUnpaidReceivable(resource.data, companyId, receivableId));
+            && deletableCancelledReceivable(resource.data, companyId, receivableId));
       }
 
       match /receivable_payments/{paymentId} {
@@ -504,7 +506,10 @@ service cloud.firestore {
           || (activeRestoreSession(companyId)
             && validRestoredPayment(request.resource.data, companyId, paymentId)
             && existsAfter(receivablePath(companyId, request.resource.data.receivableId)));
-        allow delete: if platformAdmin();
+        allow delete: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesProvisioned(companyId)
+            && deletablePaymentWithReceivable(resource.data, companyId, paymentId));
       }
 
       match /{collectionName}/{documentId} {

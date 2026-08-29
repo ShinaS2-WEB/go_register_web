@@ -224,21 +224,33 @@ test("dados de contas a receber ficam isolados por empresa", async () => {
   await assertFails(companyBDb.collection("companies/a/receivables").get());
 });
 
-test("operador cancela contas e só apaga lançamento sem pagamentos", async () => {
+test("operador cancela contas abertas ou pagas e apaga conta cancelada com pagamentos", async () => {
   const createdAt = Date.now() - 1000;
   await env.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
-    for (const id of ["cancel-keep", "delete-unpaid", "delete-partial", "cancel-invalid"]) {
+    for (const id of ["cancel-keep", "delete-unpaid", "delete-paid", "cancel-invalid"]) {
       await db.doc(`companies/a/receivables/${id}`).set(
         receivableData("a", id, `customer-${id}`, "operator", createdAt)
       );
     }
-    await db.doc("companies/a/receivables/delete-partial").update({
-      outstandingAmountCents: 2300,
-      status: "PARTIAL",
-      lastPaymentId: "payment-delete-partial",
+    await db.doc("companies/a/receivables/delete-paid").update({
+      outstandingAmountCents: 0,
+      status: "PAID",
+      lastPaymentId: "payment-delete-paid",
       lastPaymentAt: createdAt + 500,
       updatedAt: createdAt + 500
+    });
+    await db.doc("companies/a/receivable_payments/payment-delete-paid").set({
+      id: "payment-delete-paid",
+      receivableId: "delete-paid",
+      customerId: "customer-delete-paid",
+      amountCents: 3300,
+      paymentMethod: "PIX",
+      timestamp: createdAt + 500,
+      notes: "Pagamento lançado incorretamente",
+      createdByUid: "operator",
+      empresa_id: "a",
+      companyId: "a"
     });
   });
 
@@ -249,8 +261,23 @@ test("operador cancela contas e só apaga lançamento sem pagamentos", async () 
     updatedAt: cancellationAt,
     updatedByUid: "operator"
   }));
+  await assertFails(operatorDb.doc("companies/a/receivables/delete-unpaid").delete());
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-unpaid").update({
+    status: "CANCELLED",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
   await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-unpaid").delete());
-  await assertFails(operatorDb.doc("companies/a/receivables/delete-partial").delete());
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-paid").update({
+    status: "CANCELLED",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
+  await assertFails(operatorDb.doc("companies/a/receivable_payments/payment-delete-paid").delete());
+  const deletePaidBatch = operatorDb.batch();
+  deletePaidBatch.delete(operatorDb.doc("companies/a/receivable_payments/payment-delete-paid"));
+  deletePaidBatch.delete(operatorDb.doc("companies/a/receivables/delete-paid"));
+  await assertSucceeds(deletePaidBatch.commit());
   await assertFails(operatorDb.doc("companies/a/receivables/cancel-invalid").update({
     status: "CANCELLED",
     description: "Alteração não permitida",
