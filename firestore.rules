@@ -244,6 +244,26 @@ service cloud.firestore {
             && boundedDocumentId(data.lastPaymentId)
             && data.lastPaymentAt > 0));
     }
+    function validReceivableCancellationUpdate(companyId, receivableId) {
+      return resource.data.status in ['OPEN', 'PARTIAL']
+        && request.resource.data.status == 'CANCELLED'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'updatedAt', 'updatedByUid'])
+        && currentPaymentTimestamp(request.resource.data.updatedAt)
+        && request.resource.data.updatedAt >= resource.data.updatedAt
+        && request.resource.data.updatedByUid == request.auth.uid;
+    }
+    function deletableUnpaidReceivable(data, companyId, receivableId) {
+      return strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == receivableId
+        && data.status in ['OPEN', 'CANCELLED']
+        && boundedPositiveMoneyCents(data.originalAmountCents)
+        && data.outstandingAmountCents is int
+        && data.outstandingAmountCents == data.originalAmountCents
+        && data.lastPaymentId == ''
+        && data.lastPaymentAt == 0;
+    }
     function validPayment(data, companyId, paymentId) {
       return data.keys().hasOnly(['id', 'receivableId', 'customerId', 'amountCents',
           'paymentMethod', 'timestamp', 'notes', 'createdByUid', 'empresa_id', 'companyId'])
@@ -462,8 +482,12 @@ service cloud.firestore {
             && existsAfter(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)))
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
-            && validReceivablePaymentUpdate(companyId, receivableId));
-        allow delete: if platformAdmin();
+            && (validReceivablePaymentUpdate(companyId, receivableId)
+              || validReceivableCancellationUpdate(companyId, receivableId)));
+        allow delete: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesProvisioned(companyId)
+            && deletableUnpaidReceivable(resource.data, companyId, receivableId));
       }
 
       match /receivable_payments/{paymentId} {

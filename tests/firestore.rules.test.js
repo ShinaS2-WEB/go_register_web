@@ -224,6 +224,46 @@ test("dados de contas a receber ficam isolados por empresa", async () => {
   await assertFails(companyBDb.collection("companies/a/receivables").get());
 });
 
+test("operador cancela contas e só apaga lançamento sem pagamentos", async () => {
+  const createdAt = Date.now() - 1000;
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    for (const id of ["cancel-keep", "delete-unpaid", "delete-partial", "cancel-invalid"]) {
+      await db.doc(`companies/a/receivables/${id}`).set(
+        receivableData("a", id, `customer-${id}`, "operator", createdAt)
+      );
+    }
+    await db.doc("companies/a/receivables/delete-partial").update({
+      outstandingAmountCents: 2300,
+      status: "PARTIAL",
+      lastPaymentId: "payment-delete-partial",
+      lastPaymentAt: createdAt + 500,
+      updatedAt: createdAt + 500
+    });
+  });
+
+  const operatorDb = env.authenticatedContext("operator").firestore();
+  const cancellationAt = Date.now();
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/cancel-keep").update({
+    status: "CANCELLED",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-unpaid").delete());
+  await assertFails(operatorDb.doc("companies/a/receivables/delete-partial").delete());
+  await assertFails(operatorDb.doc("companies/a/receivables/cancel-invalid").update({
+    status: "CANCELLED",
+    description: "Alteração não permitida",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
+  await assertFails(
+    env.authenticatedContext("operator-b").firestore()
+      .doc("companies/a/receivables/cancel-invalid")
+      .delete()
+  );
+});
+
 test("recuperação histórica exige administrador, tenant correto e sessão temporária", async () => {
   const now = Date.now();
   const oldTimestamp = now - 365 * 86400000;
