@@ -17,11 +17,11 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
   assert.match(index, /styles\.css\?v=inventory-filters-inline-v1/);
-  assert.match(index, /app\.js\?v=backup-recovery-stock-v2/);
+  assert.match(index, /app\.js\?v=backup-recovery-pos-order-v3/);
   assert.match(index, /script-src 'self'/);
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
-  assert.match(app, /\.\/stock-order-core\.mjs\?v=stock-level-filter-v1/);
+  assert.match(app, /\.\/stock-order-core\.mjs\?v=pos-availability-order-v1/);
   assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
   assert.match(workflow, /cp cash-register-core\.mjs stock-order-core\.mjs _site\//);
   assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/android-update-core\.mjs admin\/admin\.css admin\/notifications\.css _site\/admin\//);

@@ -34,10 +34,11 @@ import {
 import { calculateExpectedRegisterBalance } from "./cash-register-core.mjs?v=all-payment-methods-v1";
 import {
   PRODUCT_STOCK_LEVEL,
+  compareProductsByAvailabilityAndName,
   compareProductsByStockLevelAndName,
   productMatchesStockFilter,
   productStockLevel,
-} from "./stock-order-core.mjs?v=stock-level-filter-v1";
+} from "./stock-order-core.mjs?v=pos-availability-order-v1";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDaNbVpvkGov4vtabbk-bAWOpb7nDpmzrA",
@@ -1372,7 +1373,9 @@ function renderPos() {
   if (!openRegister) {
     return `<section class="panel" style="min-height: 420px; display:grid; place-items:center;"><div style="text-align:center">${icon("shopping_cart")}<h2>Por favor, ABRA o caixa primeiro!</h2><button class="btn" data-action="open-register">${icon("lock_open")} Abrir Caixa</button></div></section>`;
   }
-  const filtered = state.data.products.filter((item) => `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()));
+  const filtered = state.data.products
+    .filter((item) => `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()))
+    .sort(compareProductsByAvailabilityAndName);
   const total = state.cart.reduce((sum, item) => sum + item.product.sellingPrice * item.quantity, 0);
   const finalTotal = Math.max(0, total - state.discount);
   return `
