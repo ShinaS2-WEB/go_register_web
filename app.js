@@ -2417,8 +2417,15 @@ async function removeDoc(collectionName, id) {
     return;
   }
   if (!(await openConfirmModal("Excluir Registro", "Tem certeza que deseja excluir este registro?", "Excluir"))) return;
+  const existing = collectionName === collections.products ? findById(state.data.products, id) : null;
   await runAction(
-    () => deleteDoc(tenantDocument(collectionName, id)),
+    async () => {
+      await deleteDoc(tenantDocument(collectionName, id));
+      if (collectionName === collections.products) {
+        await writeAuditLog({ action: "PRODUCT_DELETED", entityType: "product", entityId: id,
+          description: `Produto excluído: ${existing?.name || id}.` });
+      }
+    },
     "Registro excluido."
   );
 }
@@ -2735,6 +2742,9 @@ function openReceivableCustomerModal(customerKey = "") {
       createdByUid: customer?.createdByUid || receivableActorUid(),
       updatedByUid: receivableActorUid(),
     }), { merge: true });
+    await writeAuditLog({ action: customer ? "CUSTOMER_UPDATED" : "CUSTOMER_CREATED",
+      entityType: "customer", entityId: id,
+      description: `Cliente ${customer ? "atualizado" : "criado"}: ${name}.` });
     toast("Cliente salvo.");
   });
 }
@@ -2771,11 +2781,15 @@ async function removeReceivableCustomer(customerKey) {
   }
 
   await runAction(
-    () => updateDoc(tenantDocument(receivablesCollections.customers, docKey(customer, customerKey)), {
+    async () => {
+      await updateDoc(tenantDocument(receivablesCollections.customers, docKey(customer, customerKey)), {
       isActive: false,
       updatedAt: Date.now(),
       updatedByUid: receivableActorUid(),
-    }),
+      });
+      await writeAuditLog({ action: "CUSTOMER_UPDATED", entityType: "customer", entityId: customerId,
+        description: `Cliente removido da lista ativa: ${customerName}.` });
+    },
     "Cliente removido.",
   );
 }
@@ -2833,6 +2847,8 @@ function openReceivableModal(preselectedCustomerId = "") {
       updatedAt: now,
       updatedByUid: receivableActorUid(),
     }));
+    await writeAuditLog({ action: "RECEIVABLE_CREATED", entityType: "receivable", entityId: id,
+      description: `Conta lançada para ${customer.name}.`, amountCents: originalAmountCents });
     toast("Conta manual cadastrada.");
   });
 }
@@ -2943,6 +2959,10 @@ function openReceivablePaymentModal(receivableKey) {
         });
       });
       clearReceivablePaymentRetry(operation.scope, paymentId);
+      if (!previousPaymentConfirmed) {
+        await writeAuditLog({ action: "PAYMENT_RECEIVED", entityType: "receivable_payment", entityId: paymentId,
+          description: `Pagamento recebido de ${receivable.customerName || "cliente"}.`, amountCents });
+      }
     } finally {
       if (pendingReceivablePayments.get(receivableId) === paymentId) {
         pendingReceivablePayments.delete(receivableId);
@@ -3006,8 +3026,14 @@ async function cancelReceivable(receivableKey) {
       paymentSnapshot.docs.forEach((paymentDocument) => batch.delete(paymentDocument.ref));
       batch.delete(reference);
       await batch.commit();
+      await writeAuditLog({ action: "RECEIVABLE_DELETED", entityType: "receivable", entityId: receivableId,
+        description: `Conta apagada do histórico: ${receivable.description || "Conta manual"}.`,
+        amountCents: receivable.originalAmountCents });
       return;
     }
+    await writeAuditLog({ action: "RECEIVABLE_CANCELLED", entityType: "receivable", entityId: receivableId,
+      description: `Conta mantida como cancelada: ${receivable.description || "Conta manual"}.`,
+      amountCents: receivable.originalAmountCents });
   }, deleteFromHistory ? "Lançamento apagado do histórico." : "Lançamento mantido como cancelado.");
 }
 
@@ -3114,6 +3140,9 @@ function openProductModal(product = null) {
       unit: form.get("unit") || "UN",
     };
     await setDoc(tenantDocument(collections.products, id), tenantPayload(payload));
+    await writeAuditLog({ action: isEditing ? "PRODUCT_UPDATED" : "PRODUCT_CREATED",
+      entityType: "product", entityId: id,
+      description: `Produto ${isEditing ? "atualizado" : "criado"}: ${payload.name}.` });
     toast("Produto salvo.");
   });
   const stockControl = document.querySelector('#modalRoot [name="hasStockControl"]');
@@ -3206,6 +3235,8 @@ function openUserModal(item = null) {
     }));
     const aliasId = `${tenantId()}__${usernameNormalized}`;
     await setDoc(doc(db, "login_aliases", aliasId), tenantPayload({ uid: userDocId, authEmail, username }));
+    await writeAuditLog({ action: item ? "USER_UPDATED" : "USER_CREATED", entityType: "user", entityId: userDocId,
+      description: `Usuário ${item ? "atualizado" : "criado"}: ${username} (${role}).` });
     toast("Usuario salvo.");
   });
 }
@@ -3238,7 +3269,11 @@ async function toggleUser(userKey) {
   if (sameUser(user, state.user)) return toast("Voce nao pode inativar seu proprio usuario.");
   if (!canManageUser(user)) return toast("Apenas o administrador mestre pode alterar status de administradores.");
   await runAction(
-    () => updateDoc(tenantDocument(collections.users, docKey(user, userKey)), { isActive: user.isActive === false }),
+    async () => {
+      await updateDoc(tenantDocument(collections.users, docKey(user, userKey)), { isActive: user.isActive === false });
+      await writeAuditLog({ action: "USER_UPDATED", entityType: "user", entityId: docKey(user, userKey),
+        description: `Usuário ${user.isActive === false ? "ativado" : "inativado"}: ${user.username}.` });
+    },
     user.isActive === false ? "Usuario ativado." : "Usuario inativado."
   );
 }
@@ -3251,7 +3286,11 @@ async function deleteUser(userKey) {
   if (!canManageUser(user)) return toast("Apenas o administrador mestre pode excluir administradores.");
   if (!(await openConfirmModal("Excluir Usuario", `Tem certeza que deseja excluir ${user.username}?`, "Excluir"))) return;
   await runAction(
-    () => deleteDoc(tenantDocument(collections.users, docKey(user, userKey))),
+    async () => {
+      await deleteDoc(tenantDocument(collections.users, docKey(user, userKey)));
+      await writeAuditLog({ action: "USER_DELETED", entityType: "user", entityId: docKey(user, userKey),
+        description: `Usuário excluído: ${user.username}.` });
+    },
     "Registro excluido."
   );
 }
@@ -3840,6 +3879,8 @@ function openRegisterModal() {
     });
 
     await closeOlderOpenRegisters(activeRegister);
+    await writeAuditLog({ action: "CASH_OPENED", entityType: "cash_register", entityId: activeRegister.id,
+      description: "Caixa aberto.", amountCents: Math.round((Number(activeRegister.initialBalance) || 0) * 100) });
     toast("Caixa aberto.");
   });
 }
@@ -3896,6 +3937,8 @@ async function closeRegister() {
       transaction.set(tenantDocument(collections.registers, cloudActive.id), closed);
       transaction.set(controlReference, closed);
     });
+    await writeAuditLog({ action: "CASH_CLOSED", entityType: "cash_register", entityId: open.id,
+      description: "Caixa fechado.", amountCents: Math.round(closingBalance * 100) });
   }, "Caixa fechado.");
 }
 
@@ -3919,17 +3962,22 @@ function openMovementModal(kind) {
       : "O caixa foi fechado. Abra o caixa antes de registrar uma saída.");
     const id = nextId(list);
     const description = String(form.get("description") || "").trim();
+    const amount = parseDecimal(form.get("amount"));
     await setDoc(tenantDocument(collectionName, id), tenantPayload({
       id,
       timestamp: Date.now(),
       description,
-      amount: parseDecimal(form.get("amount")),
+      amount,
       paymentMethod: form.get("paymentMethod"),
       category: form.get("category") || null,
       transactionType: isEntry ? "MANUAL_SALE" : "EXIT",
       cashRegisterId: Number(open.id) || 0,
       isCancelled: false,
     }));
+    await writeAuditLog({ action: isEntry ? "MANUAL_ENTRY_CREATED" : "MANUAL_EXIT_CREATED",
+      entityType: isEntry ? "financial_entry" : "financial_exit", entityId: id,
+      description: `${isEntry ? "Entrada" : "Saída"} manual: ${description || "Sem descrição"}.`,
+      amountCents: Math.round(amount * 100) });
     toast(isEntry ? "Venda manual salva." : "Saida salva.");
     return isEntry ? undefined : () => promptCreateProductFromManualMovement(description, "exit");
   });
@@ -3956,6 +4004,9 @@ function openStockAdjustModal(selectedProduct = null) {
     if (nextStock < 0) throw new Error("Estoque nao pode ficar negativo.");
     await updateProductStock(product.id, nextStock);
     await saveStockMovement(product.id, movementQty, type, form.get("reason") || "Ajuste manual");
+    await writeAuditLog({ action: movementQty >= 0 ? "STOCK_ADDED" : "STOCK_REMOVED",
+      entityType: "product", entityId: product.id,
+      description: `${movementQty >= 0 ? "Entrada" : "Saída"} de ${Math.abs(movementQty)} unidade(s) em ${product.name}.` });
   });
 }
 
@@ -4339,16 +4390,25 @@ async function cancelTransaction(kind, id) {
         await updateProductStock(product.id, restored);
         await saveStockMovement(product.id, Number(item.quantity) || 0, "ENTRY", "Cancelamento de venda");
       }));
+      await writeAuditLog({ action: "SALE_CANCELLED", entityType: "sale", entityId: id,
+        description: "Venda cancelada e estoque devolvido.",
+        amountCents: Math.round((Number(saleData(record).finalAmount) || 0) * 100) });
     }
     if (kind === "entry") {
       const record = state.data.entries.find((item) => String(docKey(item, item.id)) === String(id) || String(item.id ?? "") === String(id));
       if (!record) throw new Error("Entrada nao encontrada.");
       await updateDoc(tenantDocument(collections.entries, docKey(record, id)), { isCancelled: true });
+      await writeAuditLog({ action: "MANUAL_ENTRY_CANCELLED", entityType: "financial_entry", entityId: id,
+        description: `Entrada manual cancelada: ${record.description || "Sem descrição"}.`,
+        amountCents: Math.round((Number(record.amount) || 0) * 100) });
     }
     if (kind === "exit") {
       const record = state.data.exits.find((item) => String(docKey(item, item.id)) === String(id) || String(item.id ?? "") === String(id));
       if (!record) throw new Error("Saida nao encontrada.");
       await updateDoc(tenantDocument(collections.exits, docKey(record, id)), { isCancelled: true });
+      await writeAuditLog({ action: "MANUAL_EXIT_CANCELLED", entityType: "financial_exit", entityId: id,
+        description: `Saída manual cancelada: ${record.description || "Sem descrição"}.`,
+        amountCents: Math.round((Number(record.amount) || 0) * 100) });
     }
   }, "Transacao cancelada.");
 }
@@ -4406,6 +4466,9 @@ async function checkout(paymentParts) {
         saveStockMovement(item.product.id, -item.quantity, "EXIT", "Venda"),
       ]);
     }));
+    await writeAuditLog({ action: "SALE_CREATED", entityType: "sale", entityId: id,
+      description: `Venda concluída com ${items.reduce((total, item) => total + item.quantity, 0)} item(ns).`,
+      amountCents: finalCents });
 
     state.cart = [];
     state.discount = 0;
