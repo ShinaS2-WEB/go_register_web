@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   PRODUCT_STOCK_LEVEL,
+  compareProductsByAvailabilityAndName,
   compareProductsByStockLevelAndName,
   productMatchesStockFilter,
   productStockLevel,
@@ -33,6 +34,22 @@ test("ordena por nivel de estoque e depois alfabeticamente", () => {
   assert.deepEqual(
     products.sort(compareProductsByStockLevelAndName).map((product) => product.name),
     ["Abacate", "Arroz", "Açúcar", "Álcool", "Feijão", "Zinco"],
+  );
+});
+
+test("ordena produtos disponiveis alfabeticamente e mantem esgotados no final", () => {
+  const products = [
+    { name: "Lucas", stockQuantity: 4, minStockThreshold: 5 },
+    { name: "Abacate", stockQuantity: 0, minStockThreshold: 5 },
+    { name: "Teste", hasStockControl: false },
+    { name: "Maca", stockQuantity: 30, minStockThreshold: 5 },
+    { name: "Baixo estoque", stockQuantity: 6, minStockThreshold: 10 },
+    { name: "Zinco", stockQuantity: 0, minStockThreshold: 5 },
+  ];
+
+  assert.deepEqual(
+    products.sort(compareProductsByAvailabilityAndName).map((product) => product.name),
+    ["Baixo estoque", "Lucas", "Maca", "Teste", "Abacate", "Zinco"],
   );
 });
 
@@ -84,6 +101,7 @@ test("estoque geral e painel identificam visualmente cada nivel", async () => {
   assert.match(app, /id="inventoryStockLevelFilter"/);
   assert.match(app, /inventory-filters-toolbar/);
   assert.match(app, /productMatchesStockFilter\(item, state\.filters\.inventoryStockLevel\)/);
+  assert.match(app, /function renderPos\(\)[\s\S]*\.sort\(compareProductsByAvailabilityAndName\)/);
   assert.match(styles, /\.stock-level[\s\S]*\.stock-level--summary/);
   assert.match(styles, /\.inventory-filters-toolbar[\s\S]*grid-template-columns: minmax\(0, 2fr\) minmax\(240px, 1fr\)/);
 });

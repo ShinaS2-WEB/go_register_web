@@ -52,3 +52,14 @@ export function compareProductsByStockLevelAndName(left, right) {
     String(right?.name || "").trim(),
   );
 }
+
+export function compareProductsByAvailabilityAndName(left, right) {
+  const leftIsOut = productStockLevel(left) === PRODUCT_STOCK_LEVEL.OUT;
+  const rightIsOut = productStockLevel(right) === PRODUCT_STOCK_LEVEL.OUT;
+  if (leftIsOut !== rightIsOut) return leftIsOut ? 1 : -1;
+
+  return productNameCollator.compare(
+    String(left?.name || "").trim(),
+    String(right?.name || "").trim(),
+  );
+}
