@@ -102,6 +102,8 @@ const state = {
   receiptSettings: null,
   receivablesEntitlement: null,
   receivablesEntitlementLoaded: false,
+  auditLogs: [],
+  auditLoaded: false,
   authStage: "loading",
   view: "dashboard",
   theme: initialTheme(),
@@ -131,6 +133,8 @@ const state = {
     inventoryStockLevel: "ALL",
     receivablesStatus: "OPEN",
     receivablesSearch: "",
+    auditSearch: "",
+    auditCategory: "ALL",
   },
   receivables: {
     customers: [],
@@ -150,6 +154,7 @@ let unsubscribers = [];
 let receivablesEntitlementUnsubscribe = null;
 let receivablesUnsubscribers = [];
 let receivablesSubscribedTenant = "";
+let auditUnsubscribe = null;
 const pendingReceivablePayments = new Map();
 const RECEIVABLE_PAYMENT_RETRY_STORAGE_KEY = "goRegisterReceivablePaymentRetriesV1";
 let checkoutInProgress = false;
@@ -160,10 +165,11 @@ const navItems = [
   ["cash", "Caixa", "payments", "all"],
   ["receivables", "Clientes e Contas", "request_quote", "receivables"],
   ["inventory", "Estoque", "inventory_2", "admin"],
+  ["audit", "Auditoria", "policy", "admin"],
   ["settings", "Ajustes", "settings", "all"],
 ];
 
-const adminRoutes = new Set(["inventory", "stockHistory", "cashHistory", "categories", "suppliers", "users", "reports"]);
+const adminRoutes = new Set(["inventory", "stockHistory", "cashHistory", "categories", "suppliers", "users", "reports", "audit"]);
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const dateTime = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
@@ -736,6 +742,10 @@ function clearSubscriptions() {
   unsubscribers = [];
   receivablesEntitlementUnsubscribe?.();
   receivablesEntitlementUnsubscribe = null;
+  auditUnsubscribe?.();
+  auditUnsubscribe = null;
+  state.auditLogs = [];
+  state.auditLoaded = false;
   stopReceivablesSubscriptions(true);
   state.loadedCollections.clear();
   state.collectionErrors.clear();
@@ -897,6 +907,46 @@ function subscribe() {
     unsubscribers.push(unsubscribe);
   });
   subscribeAccountsReceivableEntitlement();
+  subscribeAuditLogs();
+}
+
+function subscribeAuditLogs() {
+  if (!isAdmin() || !tenantId()) return;
+  auditUnsubscribe?.();
+  auditUnsubscribe = onSnapshot(tenantCollection("audit_logs"), (snapshot) => {
+    state.auditLogs = snapshot.docs
+      .map((item) => ({ ...item.data(), docId: item.id }))
+      .sort((left, right) => (Number(right.timestamp) || 0) - (Number(left.timestamp) || 0));
+    state.auditLoaded = true;
+    if (state.user && state.view === "audit" && !hasOpenModal()) renderApp();
+  }, (error) => {
+    state.auditLoaded = true;
+    state.collectionErrors.set("audit", error.message || "Falha ao carregar a auditoria.");
+    if (state.user && state.view === "audit") renderApp();
+  });
+}
+
+async function writeAuditLog({ action, entityType, entityId, description, amountCents = null }) {
+  const companyId = tenantId();
+  const actorUid = auth.currentUser?.uid;
+  if (!companyId || !actorUid || !state.user) throw new Error("Sessão inválida para registrar auditoria.");
+  const eventId = crypto.randomUUID();
+  const payload = {
+    id: eventId,
+    empresa_id: companyId,
+    companyId,
+    action: String(action || "").trim().slice(0, 64),
+    entityType: String(entityType || "").trim().slice(0, 64),
+    entityId: String(entityId || "").trim().slice(0, 128),
+    description: String(description || "").trim().slice(0, 500),
+    amountCents: amountCents == null ? null : Math.max(0, Math.round(Number(amountCents) || 0)),
+    actorUid,
+    actorName: String(state.user.username || "Usuário").trim().slice(0, 120),
+    actorRole: String(state.user.role || "OPERATOR"),
+    timestamp: Date.now(),
+    source: "WEB",
+  };
+  await setDoc(tenantDocument("audit_logs", eventId), payload);
 }
 
 function syncSessionUser() {
@@ -1222,8 +1272,57 @@ const views = {
   suppliers: renderSuppliers,
   users: renderUsers,
   reports: renderReports,
+  audit: renderAudit,
   settings: renderSettings,
 };
+
+const auditActionLabels = {
+  SALE_CREATED: "Venda concluída", SALE_CANCELLED: "Venda cancelada",
+  CASH_OPENED: "Caixa aberto", CASH_CLOSED: "Caixa fechado",
+  MANUAL_ENTRY_CREATED: "Entrada manual", MANUAL_EXIT_CREATED: "Saída manual",
+  MANUAL_ENTRY_CANCELLED: "Entrada cancelada", MANUAL_EXIT_CANCELLED: "Saída cancelada",
+  PRODUCT_CREATED: "Produto criado", PRODUCT_UPDATED: "Produto atualizado", PRODUCT_DELETED: "Produto excluído",
+  STOCK_ADDED: "Estoque adicionado", STOCK_REMOVED: "Estoque retirado",
+  CUSTOMER_CREATED: "Cliente criado", CUSTOMER_UPDATED: "Cliente atualizado",
+  RECEIVABLE_CREATED: "Conta lançada", RECEIVABLE_CANCELLED: "Conta cancelada",
+  RECEIVABLE_DELETED: "Conta apagada", PAYMENT_RECEIVED: "Pagamento recebido",
+  USER_CREATED: "Usuário criado", USER_UPDATED: "Usuário atualizado", USER_DELETED: "Usuário excluído",
+  BACKUP_RESTORED: "Backup restaurado",
+};
+
+function auditMatchesCategory(event, category) {
+  if (category === "ALL") return true;
+  if (category === "CASH") return event.action.includes("CASH") || event.action.includes("MANUAL");
+  if (category === "RECEIVABLE") return ["RECEIVABLE", "PAYMENT", "CUSTOMER"].some((value) => event.action.includes(value));
+  return event.action.includes(category);
+}
+
+function renderAudit() {
+  const search = state.filters.auditSearch.trim().toLocaleLowerCase("pt-BR");
+  const events = state.auditLogs.filter((event) => auditMatchesCategory(event, state.filters.auditCategory)
+    && `${event.actorName || ""} ${event.description || ""} ${event.entityId || ""}`.toLocaleLowerCase("pt-BR").includes(search));
+  return `<section class="section">
+    <article class="panel">
+      <div class="toolbar">
+        <label class="field"><span>Tipo de operação</span><select id="auditCategory">
+          ${[["ALL", "Todos"], ["SALE", "Vendas"], ["CASH", "Caixa"], ["PRODUCT", "Estoque"], ["RECEIVABLE", "Contas"], ["USER", "Usuários"]]
+            .map(([value, label]) => `<option value="${value}" ${state.filters.auditCategory === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select></label>
+        <label class="field"><span>Buscar</span><span class="input-wrap">${icon("search")}<input id="auditSearch" value="${escapeHtml(state.filters.auditSearch)}" placeholder="Usuário, descrição ou código" /></span></label>
+      </div>
+      ${!state.auditLoaded ? `<p class="muted">Carregando auditoria...</p>` : events.length ? `
+        <div class="table-wrap"><table><thead><tr><th>Data/Hora</th><th>Ação</th><th>Usuário</th><th>Descrição</th><th>Valor</th><th>Origem</th></tr></thead>
+        <tbody>${events.map((event) => `<tr>
+          <td>${escapeHtml(dateTime.format(new Date(Number(event.timestamp) || 0)))}</td>
+          <td><strong>${escapeHtml(auditActionLabels[event.action] || event.action)}</strong></td>
+          <td>${escapeHtml(event.actorName || "-")}<br><small>${escapeHtml(event.actorRole || "-")}</small></td>
+          <td>${escapeHtml(event.description || "-")}<br><small>Código: ${escapeHtml(event.entityId || "-")}</small></td>
+          <td>${event.amountCents == null ? "-" : money.format(Number(event.amountCents) / 100)}</td>
+          <td>${event.source === "ANDROID" ? "Aplicativo" : "Site"}</td>
+        </tr>`).join("")}</tbody></table></div>` : `<p class="muted">Nenhum registro encontrado.</p>`}
+    </article>
+  </section>`;
+}
 
 function allTransactions() {
   const saleRows = state.data.sales.map((item) => {
@@ -2151,6 +2250,7 @@ function renderSettings() {
             <button class="settings-row" data-view="reports">${icon("monitoring")}<span><strong>Relatorios e Exportacao</strong><small>PDF, Excel e backup de dados</small></span></button>
             <button class="settings-row" data-view="cashHistory">${icon("receipt_long")}<span><strong>Historico de Caixa</strong><small>Fechamentos, saldos e diferencas</small></span></button>
             <button class="settings-row" data-view="stockHistory">${icon("history")}<span><strong>Historico de Estoque</strong><small>Entradas, saidas e ajustes</small></span></button>
+            <button class="settings-row" data-view="audit">${icon("policy")}<span><strong>Registro de Auditoria</strong><small>Quem fez cada operação e quando</small></span></button>
             <button class="settings-row" data-view="categories">${icon("category")}<span><strong>Categorias</strong><small>Cadastro auxiliar de produtos</small></span></button>
             <button class="settings-row" data-view="suppliers">${icon("local_shipping")}<span><strong>Fornecedores</strong><small>Cadastro auxiliar de produtos</small></span></button>
           </div>
@@ -2193,6 +2293,14 @@ function bindViewEvents() {
   document.querySelector("#receivablesSearch")?.addEventListener("input", (event) => {
     state.filters.receivablesSearch = event.target.value;
     renderApp("receivablesSearch");
+  });
+  document.querySelector("#auditCategory")?.addEventListener("change", (event) => {
+    state.filters.auditCategory = event.target.value;
+    renderApp();
+  });
+  document.querySelector("#auditSearch")?.addEventListener("input", (event) => {
+    state.filters.auditSearch = event.target.value;
+    renderApp("auditSearch");
   });
   document.querySelectorAll("#posSearch,#inventorySearch,#genericSearch").forEach((input) => input.addEventListener("input", (event) => {
     state.search = event.target.value;
