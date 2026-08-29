@@ -12,11 +12,11 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  writeBatch,
   runTransaction,
   deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
 import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, createUserWithEmailAndPassword, reauthenticateWithCredential, EmailAuthProvider, updatePassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js";
-import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-functions.js";
 import {
   applyReceivablePayment,
   filterReceivables,
@@ -52,8 +52,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
-const functions = getFunctions(app, "southamerica-east1");
-const cancelReceivableCallable = httpsCallable(functions, "cancelReceivable");
 const root = document.querySelector("#app");
 
 const collections = {
@@ -104,6 +102,8 @@ const state = {
   receiptSettings: null,
   receivablesEntitlement: null,
   receivablesEntitlementLoaded: false,
+  auditLogs: [],
+  auditLoaded: false,
   authStage: "loading",
   view: "dashboard",
   theme: initialTheme(),
@@ -133,6 +133,8 @@ const state = {
     inventoryStockLevel: "ALL",
     receivablesStatus: "OPEN",
     receivablesSearch: "",
+    auditSearch: "",
+    auditCategory: "ALL",
   },
   receivables: {
     customers: [],
@@ -152,6 +154,7 @@ let unsubscribers = [];
 let receivablesEntitlementUnsubscribe = null;
 let receivablesUnsubscribers = [];
 let receivablesSubscribedTenant = "";
+let auditUnsubscribe = null;
 const pendingReceivablePayments = new Map();
 const RECEIVABLE_PAYMENT_RETRY_STORAGE_KEY = "goRegisterReceivablePaymentRetriesV1";
 let checkoutInProgress = false;
@@ -162,10 +165,11 @@ const navItems = [
   ["cash", "Caixa", "payments", "all"],
   ["receivables", "Clientes e Contas", "request_quote", "receivables"],
   ["inventory", "Estoque", "inventory_2", "admin"],
+  ["audit", "Auditoria", "policy", "admin"],
   ["settings", "Ajustes", "settings", "all"],
 ];
 
-const adminRoutes = new Set(["inventory", "stockHistory", "cashHistory", "categories", "suppliers", "users", "reports"]);
+const adminRoutes = new Set(["inventory", "stockHistory", "cashHistory", "categories", "suppliers", "users", "reports", "audit"]);
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const dateTime = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
@@ -738,6 +742,10 @@ function clearSubscriptions() {
   unsubscribers = [];
   receivablesEntitlementUnsubscribe?.();
   receivablesEntitlementUnsubscribe = null;
+  auditUnsubscribe?.();
+  auditUnsubscribe = null;
+  state.auditLogs = [];
+  state.auditLoaded = false;
   stopReceivablesSubscriptions(true);
   state.loadedCollections.clear();
   state.collectionErrors.clear();
@@ -899,6 +907,46 @@ function subscribe() {
     unsubscribers.push(unsubscribe);
   });
   subscribeAccountsReceivableEntitlement();
+  subscribeAuditLogs();
+}
+
+function subscribeAuditLogs() {
+  if (!isAdmin() || !tenantId()) return;
+  auditUnsubscribe?.();
+  auditUnsubscribe = onSnapshot(tenantCollection("audit_logs"), (snapshot) => {
+    state.auditLogs = snapshot.docs
+      .map((item) => ({ ...item.data(), docId: item.id }))
+      .sort((left, right) => (Number(right.timestamp) || 0) - (Number(left.timestamp) || 0));
+    state.auditLoaded = true;
+    if (state.user && state.view === "audit" && !hasOpenModal()) renderApp();
+  }, (error) => {
+    state.auditLoaded = true;
+    state.collectionErrors.set("audit", error.message || "Falha ao carregar a auditoria.");
+    if (state.user && state.view === "audit") renderApp();
+  });
+}
+
+async function writeAuditLog({ action, entityType, entityId, description, amountCents = null }) {
+  const companyId = tenantId();
+  const actorUid = auth.currentUser?.uid;
+  if (!companyId || !actorUid || !state.user) throw new Error("Sessão inválida para registrar auditoria.");
+  const eventId = crypto.randomUUID();
+  const payload = {
+    id: eventId,
+    empresa_id: companyId,
+    companyId,
+    action: String(action || "").trim().slice(0, 64),
+    entityType: String(entityType || "").trim().slice(0, 64),
+    entityId: String(entityId || "").trim().slice(0, 128),
+    description: String(description || "").trim().slice(0, 500),
+    amountCents: amountCents == null ? null : Math.max(0, Math.round(Number(amountCents) || 0)),
+    actorUid,
+    actorName: String(state.user.username || "Usuário").trim().slice(0, 120),
+    actorRole: String(state.user.role || "OPERATOR"),
+    timestamp: Date.now(),
+    source: "WEB",
+  };
+  await setDoc(tenantDocument("audit_logs", eventId), payload);
 }
 
 function syncSessionUser() {
@@ -1224,8 +1272,57 @@ const views = {
   suppliers: renderSuppliers,
   users: renderUsers,
   reports: renderReports,
+  audit: renderAudit,
   settings: renderSettings,
 };
+
+const auditActionLabels = {
+  SALE_CREATED: "Venda concluída", SALE_CANCELLED: "Venda cancelada",
+  CASH_OPENED: "Caixa aberto", CASH_CLOSED: "Caixa fechado",
+  MANUAL_ENTRY_CREATED: "Entrada manual", MANUAL_EXIT_CREATED: "Saída manual",
+  MANUAL_ENTRY_CANCELLED: "Entrada cancelada", MANUAL_EXIT_CANCELLED: "Saída cancelada",
+  PRODUCT_CREATED: "Produto criado", PRODUCT_UPDATED: "Produto atualizado", PRODUCT_DELETED: "Produto excluído",
+  STOCK_ADDED: "Estoque adicionado", STOCK_REMOVED: "Estoque retirado",
+  CUSTOMER_CREATED: "Cliente criado", CUSTOMER_UPDATED: "Cliente atualizado",
+  RECEIVABLE_CREATED: "Conta lançada", RECEIVABLE_CANCELLED: "Conta cancelada",
+  RECEIVABLE_DELETED: "Conta apagada", PAYMENT_RECEIVED: "Pagamento recebido",
+  USER_CREATED: "Usuário criado", USER_UPDATED: "Usuário atualizado", USER_DELETED: "Usuário excluído",
+  BACKUP_RESTORED: "Backup restaurado",
+};
+
+function auditMatchesCategory(event, category) {
+  if (category === "ALL") return true;
+  if (category === "CASH") return event.action.includes("CASH") || event.action.includes("MANUAL");
+  if (category === "RECEIVABLE") return ["RECEIVABLE", "PAYMENT", "CUSTOMER"].some((value) => event.action.includes(value));
+  return event.action.includes(category);
+}
+
+function renderAudit() {
+  const search = state.filters.auditSearch.trim().toLocaleLowerCase("pt-BR");
+  const events = state.auditLogs.filter((event) => auditMatchesCategory(event, state.filters.auditCategory)
+    && `${event.actorName || ""} ${event.description || ""} ${event.entityId || ""}`.toLocaleLowerCase("pt-BR").includes(search));
+  return `<section class="section">
+    <article class="panel">
+      <div class="toolbar">
+        <label class="field"><span>Tipo de operação</span><select id="auditCategory">
+          ${[["ALL", "Todos"], ["SALE", "Vendas"], ["CASH", "Caixa"], ["PRODUCT", "Estoque"], ["RECEIVABLE", "Contas"], ["USER", "Usuários"]]
+            .map(([value, label]) => `<option value="${value}" ${state.filters.auditCategory === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select></label>
+        <label class="field"><span>Buscar</span><span class="input-wrap">${icon("search")}<input id="auditSearch" value="${escapeHtml(state.filters.auditSearch)}" placeholder="Usuário, descrição ou código" /></span></label>
+      </div>
+      ${!state.auditLoaded ? `<p class="muted">Carregando auditoria...</p>` : events.length ? `
+        <div class="table-wrap"><table><thead><tr><th>Data/Hora</th><th>Ação</th><th>Usuário</th><th>Descrição</th><th>Valor</th><th>Origem</th></tr></thead>
+        <tbody>${events.map((event) => `<tr>
+          <td>${escapeHtml(dateTime.format(new Date(Number(event.timestamp) || 0)))}</td>
+          <td><strong>${escapeHtml(auditActionLabels[event.action] || event.action)}</strong></td>
+          <td>${escapeHtml(event.actorName || "-")}<br><small>${escapeHtml(event.actorRole || "-")}</small></td>
+          <td>${escapeHtml(event.description || "-")}<br><small>Código: ${escapeHtml(event.entityId || "-")}</small></td>
+          <td>${event.amountCents == null ? "-" : money.format(Number(event.amountCents) / 100)}</td>
+          <td>${event.source === "ANDROID" ? "Aplicativo" : "Site"}</td>
+        </tr>`).join("")}</tbody></table></div>` : `<p class="muted">Nenhum registro encontrado.</p>`}
+    </article>
+  </section>`;
+}
 
 function allTransactions() {
   const saleRows = state.data.sales.map((item) => {
@@ -1817,7 +1914,7 @@ function renderReceivables() {
                   ${canReceive ? `<button class="icon-btn" data-receivable-payment="${key}" title="Registrar pagamento">${icon("payments")}</button>` : ""}
                   <button class="icon-btn" data-receivable-history="${key}" title="Histórico de pagamentos">${icon("history")}</button>
                   ${hasPhone && Number(receivable.outstandingAmountCents) > 0 && status !== "CANCELLED" ? `<button class="icon-btn" data-receivable-whatsapp="${key}" title="Enviar lembrete pelo WhatsApp">${icon("chat")}</button>` : ""}
-                  ${access.canCollect && status !== "CANCELLED" ? `<button class="icon-btn" data-cancel-receivable="${key}" title="Cancelar lançamento">${icon("cancel")}</button>` : ""}
+                  ${access.canCollect && ["OPEN", "PARTIAL", "OVERDUE", "PAID", "CANCELLED"].includes(status) ? `<button class="btn secondary compact" data-cancel-receivable="${key}" title="${status === "CANCELLED" ? "Apagar do histórico" : "Cancelar lançamento"}">${icon("cancel")} ${status === "CANCELLED" ? "Apagar" : "Cancelar"}</button>` : ""}
                 </td>
               </tr>`;
             }).join("") || `<tr><td colspan="7" class="muted">Nenhuma conta encontrada para este filtro.</td></tr>`}</tbody>
@@ -2153,6 +2250,7 @@ function renderSettings() {
             <button class="settings-row" data-view="reports">${icon("monitoring")}<span><strong>Relatorios e Exportacao</strong><small>PDF, Excel e backup de dados</small></span></button>
             <button class="settings-row" data-view="cashHistory">${icon("receipt_long")}<span><strong>Historico de Caixa</strong><small>Fechamentos, saldos e diferencas</small></span></button>
             <button class="settings-row" data-view="stockHistory">${icon("history")}<span><strong>Historico de Estoque</strong><small>Entradas, saidas e ajustes</small></span></button>
+            <button class="settings-row" data-view="audit">${icon("policy")}<span><strong>Registro de Auditoria</strong><small>Quem fez cada operação e quando</small></span></button>
             <button class="settings-row" data-view="categories">${icon("category")}<span><strong>Categorias</strong><small>Cadastro auxiliar de produtos</small></span></button>
             <button class="settings-row" data-view="suppliers">${icon("local_shipping")}<span><strong>Fornecedores</strong><small>Cadastro auxiliar de produtos</small></span></button>
           </div>
@@ -2195,6 +2293,14 @@ function bindViewEvents() {
   document.querySelector("#receivablesSearch")?.addEventListener("input", (event) => {
     state.filters.receivablesSearch = event.target.value;
     renderApp("receivablesSearch");
+  });
+  document.querySelector("#auditCategory")?.addEventListener("change", (event) => {
+    state.filters.auditCategory = event.target.value;
+    renderApp();
+  });
+  document.querySelector("#auditSearch")?.addEventListener("input", (event) => {
+    state.filters.auditSearch = event.target.value;
+    renderApp("auditSearch");
   });
   document.querySelectorAll("#posSearch,#inventorySearch,#genericSearch").forEach((input) => input.addEventListener("input", (event) => {
     state.search = event.target.value;
@@ -2311,8 +2417,15 @@ async function removeDoc(collectionName, id) {
     return;
   }
   if (!(await openConfirmModal("Excluir Registro", "Tem certeza que deseja excluir este registro?", "Excluir"))) return;
+  const existing = collectionName === collections.products ? findById(state.data.products, id) : null;
   await runAction(
-    () => deleteDoc(tenantDocument(collectionName, id)),
+    async () => {
+      await deleteDoc(tenantDocument(collectionName, id));
+      if (collectionName === collections.products) {
+        await writeAuditLog({ action: "PRODUCT_DELETED", entityType: "product", entityId: id,
+          description: `Produto excluído: ${existing?.name || id}.` });
+      }
+    },
     "Registro excluido."
   );
 }
@@ -2629,6 +2742,9 @@ function openReceivableCustomerModal(customerKey = "") {
       createdByUid: customer?.createdByUid || receivableActorUid(),
       updatedByUid: receivableActorUid(),
     }), { merge: true });
+    await writeAuditLog({ action: customer ? "CUSTOMER_UPDATED" : "CUSTOMER_CREATED",
+      entityType: "customer", entityId: id,
+      description: `Cliente ${customer ? "atualizado" : "criado"}: ${name}.` });
     toast("Cliente salvo.");
   });
 }
@@ -2665,11 +2781,15 @@ async function removeReceivableCustomer(customerKey) {
   }
 
   await runAction(
-    () => updateDoc(tenantDocument(receivablesCollections.customers, docKey(customer, customerKey)), {
+    async () => {
+      await updateDoc(tenantDocument(receivablesCollections.customers, docKey(customer, customerKey)), {
       isActive: false,
       updatedAt: Date.now(),
       updatedByUid: receivableActorUid(),
-    }),
+      });
+      await writeAuditLog({ action: "CUSTOMER_UPDATED", entityType: "customer", entityId: customerId,
+        description: `Cliente removido da lista ativa: ${customerName}.` });
+    },
     "Cliente removido.",
   );
 }
@@ -2727,6 +2847,8 @@ function openReceivableModal(preselectedCustomerId = "") {
       updatedAt: now,
       updatedByUid: receivableActorUid(),
     }));
+    await writeAuditLog({ action: "RECEIVABLE_CREATED", entityType: "receivable", entityId: id,
+      description: `Conta lançada para ${customer.name}.`, amountCents: originalAmountCents });
     toast("Conta manual cadastrada.");
   });
 }
@@ -2837,6 +2959,10 @@ function openReceivablePaymentModal(receivableKey) {
         });
       });
       clearReceivablePaymentRetry(operation.scope, paymentId);
+      if (!previousPaymentConfirmed) {
+        await writeAuditLog({ action: "PAYMENT_RECEIVED", entityType: "receivable_payment", entityId: paymentId,
+          description: `Pagamento recebido de ${receivable.customerName || "cliente"}.`, amountCents });
+      }
     } finally {
       if (pendingReceivablePayments.get(receivableId) === paymentId) {
         pendingReceivablePayments.delete(receivableId);
@@ -2851,19 +2977,64 @@ function openReceivablePaymentModal(receivableKey) {
 async function cancelReceivable(receivableKey) {
   const receivable = findReceivable(receivableKey);
   if (!receivable) return toast("Conta nao encontrada.");
-  if (receivableDisplayStatus(receivable) === "CANCELLED") return toast("Este lancamento ja esta cancelado.");
+  const status = receivableDisplayStatus(receivable);
+  if (!["OPEN", "PARTIAL", "OVERDUE", "PAID", "CANCELLED"].includes(status)) {
+    return toast("Esta conta não pode ser cancelada ou apagada.");
+  }
+
+  const receivableId = docKey(receivable, receivableKey);
+  const alreadyCancelled = status === "CANCELLED";
+  let deleteFromHistory = alreadyCancelled;
+
+  if (alreadyCancelled) {
+    const confirmed = await openConfirmModal(
+      "Apagar lançamento",
+      "Deseja apagar definitivamente esta conta e todos os pagamentos vinculados do histórico do cliente?",
+      "Apagar do histórico"
+    );
+    if (!confirmed) return;
+  } else {
+    deleteFromHistory = await openChoiceModal(
+      "Cancelar lançamento",
+      "Deseja apagar esta conta e seus pagamentos do histórico? Se escolher NÃO, ela continuará visível como cancelada e poderá ser apagada depois.",
+      "Não, manter cancelada",
+      "Sim, apagar"
+    );
+  }
 
   const password = await requestCancellationPassword();
   if (!password) return;
 
   await runAction(async () => {
-    const result = await cancelReceivableCallable({
-      companyId: tenantId(),
-      receivableId: docKey(receivable, receivableKey),
-      password,
-    });
-    if (result.data?.alreadyCancelled) throw new Error("Este lancamento ja estava cancelado.");
-  }, "Lancamento cancelado.");
+    const reference = tenantDocument(collections.receivables, receivableId);
+    if (!alreadyCancelled) {
+      await updateDoc(reference, {
+        status: "CANCELLED",
+        updatedAt: Date.now(),
+        updatedByUid: receivableActorUid(),
+      });
+    }
+    if (deleteFromHistory) {
+      const paymentSnapshot = await getDocs(query(
+        tenantCollection(collections.payments),
+        where("receivableId", "==", receivableId)
+      ));
+      if (paymentSnapshot.size > 498) {
+        throw new Error("Esta conta possui pagamentos demais para exclusão automática.");
+      }
+      const batch = writeBatch(db);
+      paymentSnapshot.docs.forEach((paymentDocument) => batch.delete(paymentDocument.ref));
+      batch.delete(reference);
+      await batch.commit();
+      await writeAuditLog({ action: "RECEIVABLE_DELETED", entityType: "receivable", entityId: receivableId,
+        description: `Conta apagada do histórico: ${receivable.description || "Conta manual"}.`,
+        amountCents: receivable.originalAmountCents });
+      return;
+    }
+    await writeAuditLog({ action: "RECEIVABLE_CANCELLED", entityType: "receivable", entityId: receivableId,
+      description: `Conta mantida como cancelada: ${receivable.description || "Conta manual"}.`,
+      amountCents: receivable.originalAmountCents });
+  }, deleteFromHistory ? "Lançamento apagado do histórico." : "Lançamento mantido como cancelado.");
 }
 
 function openReceivablePaymentHistory(receivableKey) {
@@ -2969,6 +3140,9 @@ function openProductModal(product = null) {
       unit: form.get("unit") || "UN",
     };
     await setDoc(tenantDocument(collections.products, id), tenantPayload(payload));
+    await writeAuditLog({ action: isEditing ? "PRODUCT_UPDATED" : "PRODUCT_CREATED",
+      entityType: "product", entityId: id,
+      description: `Produto ${isEditing ? "atualizado" : "criado"}: ${payload.name}.` });
     toast("Produto salvo.");
   });
   const stockControl = document.querySelector('#modalRoot [name="hasStockControl"]');
@@ -3061,6 +3235,8 @@ function openUserModal(item = null) {
     }));
     const aliasId = `${tenantId()}__${usernameNormalized}`;
     await setDoc(doc(db, "login_aliases", aliasId), tenantPayload({ uid: userDocId, authEmail, username }));
+    await writeAuditLog({ action: item ? "USER_UPDATED" : "USER_CREATED", entityType: "user", entityId: userDocId,
+      description: `Usuário ${item ? "atualizado" : "criado"}: ${username} (${role}).` });
     toast("Usuario salvo.");
   });
 }
@@ -3093,7 +3269,11 @@ async function toggleUser(userKey) {
   if (sameUser(user, state.user)) return toast("Voce nao pode inativar seu proprio usuario.");
   if (!canManageUser(user)) return toast("Apenas o administrador mestre pode alterar status de administradores.");
   await runAction(
-    () => updateDoc(tenantDocument(collections.users, docKey(user, userKey)), { isActive: user.isActive === false }),
+    async () => {
+      await updateDoc(tenantDocument(collections.users, docKey(user, userKey)), { isActive: user.isActive === false });
+      await writeAuditLog({ action: "USER_UPDATED", entityType: "user", entityId: docKey(user, userKey),
+        description: `Usuário ${user.isActive === false ? "ativado" : "inativado"}: ${user.username}.` });
+    },
     user.isActive === false ? "Usuario ativado." : "Usuario inativado."
   );
 }
@@ -3106,7 +3286,11 @@ async function deleteUser(userKey) {
   if (!canManageUser(user)) return toast("Apenas o administrador mestre pode excluir administradores.");
   if (!(await openConfirmModal("Excluir Usuario", `Tem certeza que deseja excluir ${user.username}?`, "Excluir"))) return;
   await runAction(
-    () => deleteDoc(tenantDocument(collections.users, docKey(user, userKey))),
+    async () => {
+      await deleteDoc(tenantDocument(collections.users, docKey(user, userKey)));
+      await writeAuditLog({ action: "USER_DELETED", entityType: "user", entityId: docKey(user, userKey),
+        description: `Usuário excluído: ${user.username}.` });
+    },
     "Registro excluido."
   );
 }
@@ -3695,6 +3879,8 @@ function openRegisterModal() {
     });
 
     await closeOlderOpenRegisters(activeRegister);
+    await writeAuditLog({ action: "CASH_OPENED", entityType: "cash_register", entityId: activeRegister.id,
+      description: "Caixa aberto.", amountCents: Math.round((Number(activeRegister.initialBalance) || 0) * 100) });
     toast("Caixa aberto.");
   });
 }
@@ -3751,6 +3937,8 @@ async function closeRegister() {
       transaction.set(tenantDocument(collections.registers, cloudActive.id), closed);
       transaction.set(controlReference, closed);
     });
+    await writeAuditLog({ action: "CASH_CLOSED", entityType: "cash_register", entityId: open.id,
+      description: "Caixa fechado.", amountCents: Math.round(closingBalance * 100) });
   }, "Caixa fechado.");
 }
 
@@ -3774,17 +3962,22 @@ function openMovementModal(kind) {
       : "O caixa foi fechado. Abra o caixa antes de registrar uma saída.");
     const id = nextId(list);
     const description = String(form.get("description") || "").trim();
+    const amount = parseDecimal(form.get("amount"));
     await setDoc(tenantDocument(collectionName, id), tenantPayload({
       id,
       timestamp: Date.now(),
       description,
-      amount: parseDecimal(form.get("amount")),
+      amount,
       paymentMethod: form.get("paymentMethod"),
       category: form.get("category") || null,
       transactionType: isEntry ? "MANUAL_SALE" : "EXIT",
       cashRegisterId: Number(open.id) || 0,
       isCancelled: false,
     }));
+    await writeAuditLog({ action: isEntry ? "MANUAL_ENTRY_CREATED" : "MANUAL_EXIT_CREATED",
+      entityType: isEntry ? "financial_entry" : "financial_exit", entityId: id,
+      description: `${isEntry ? "Entrada" : "Saída"} manual: ${description || "Sem descrição"}.`,
+      amountCents: Math.round(amount * 100) });
     toast(isEntry ? "Venda manual salva." : "Saida salva.");
     return isEntry ? undefined : () => promptCreateProductFromManualMovement(description, "exit");
   });
@@ -3811,6 +4004,9 @@ function openStockAdjustModal(selectedProduct = null) {
     if (nextStock < 0) throw new Error("Estoque nao pode ficar negativo.");
     await updateProductStock(product.id, nextStock);
     await saveStockMovement(product.id, movementQty, type, form.get("reason") || "Ajuste manual");
+    await writeAuditLog({ action: movementQty >= 0 ? "STOCK_ADDED" : "STOCK_REMOVED",
+      entityType: "product", entityId: product.id,
+      description: `${movementQty >= 0 ? "Entrada" : "Saída"} de ${Math.abs(movementQty)} unidade(s) em ${product.name}.` });
   });
 }
 
@@ -4194,16 +4390,25 @@ async function cancelTransaction(kind, id) {
         await updateProductStock(product.id, restored);
         await saveStockMovement(product.id, Number(item.quantity) || 0, "ENTRY", "Cancelamento de venda");
       }));
+      await writeAuditLog({ action: "SALE_CANCELLED", entityType: "sale", entityId: id,
+        description: "Venda cancelada e estoque devolvido.",
+        amountCents: Math.round((Number(saleData(record).finalAmount) || 0) * 100) });
     }
     if (kind === "entry") {
       const record = state.data.entries.find((item) => String(docKey(item, item.id)) === String(id) || String(item.id ?? "") === String(id));
       if (!record) throw new Error("Entrada nao encontrada.");
       await updateDoc(tenantDocument(collections.entries, docKey(record, id)), { isCancelled: true });
+      await writeAuditLog({ action: "MANUAL_ENTRY_CANCELLED", entityType: "financial_entry", entityId: id,
+        description: `Entrada manual cancelada: ${record.description || "Sem descrição"}.`,
+        amountCents: Math.round((Number(record.amount) || 0) * 100) });
     }
     if (kind === "exit") {
       const record = state.data.exits.find((item) => String(docKey(item, item.id)) === String(id) || String(item.id ?? "") === String(id));
       if (!record) throw new Error("Saida nao encontrada.");
       await updateDoc(tenantDocument(collections.exits, docKey(record, id)), { isCancelled: true });
+      await writeAuditLog({ action: "MANUAL_EXIT_CANCELLED", entityType: "financial_exit", entityId: id,
+        description: `Saída manual cancelada: ${record.description || "Sem descrição"}.`,
+        amountCents: Math.round((Number(record.amount) || 0) * 100) });
     }
   }, "Transacao cancelada.");
 }
@@ -4261,6 +4466,9 @@ async function checkout(paymentParts) {
         saveStockMovement(item.product.id, -item.quantity, "EXIT", "Venda"),
       ]);
     }));
+    await writeAuditLog({ action: "SALE_CREATED", entityType: "sale", entityId: id,
+      description: `Venda concluída com ${items.reduce((total, item) => total + item.quantity, 0)} item(ns).`,
+      amountCents: finalCents });
 
     state.cart = [];
     state.discount = 0;

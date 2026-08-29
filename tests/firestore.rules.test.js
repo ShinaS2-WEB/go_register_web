@@ -63,6 +63,25 @@ function androidUpdateData(uid, now = Date.now(), overrides = {}) {
   };
 }
 
+function auditEventData(companyId, eventId, uid, now = Date.now(), overrides = {}) {
+  return {
+    id: eventId,
+    empresa_id: companyId,
+    companyId,
+    action: "SALE_CREATED",
+    entityType: "sale",
+    entityId: "sale-1",
+    description: "Venda concluída",
+    amountCents: 3300,
+    actorUid: uid,
+    actorName: "Usuário Teste",
+    actorRole: "OPERATOR",
+    timestamp: now,
+    source: "WEB",
+    ...overrides
+  };
+}
+
 test.before(async () => {
   env = await initializeTestEnvironment({
     projectId: "go-register-rules-test",
@@ -157,6 +176,36 @@ test("compatibilidade Spark: administrador atualiza usuários e estoque, mas aud
   await assertFails(db.doc("companies/a/audit_logs/fake").set({ action: "FORGED" }));
 });
 
+test("auditoria aceita autoria legítima, restringe leitura e permanece imutável", async () => {
+  const operatorDb = env.authenticatedContext("operator").firestore();
+  const otherOperatorDb = env.authenticatedContext("operator-restore").firestore();
+  const adminDb = env.authenticatedContext("admin").firestore();
+  const eventRef = operatorDb.doc("companies/a/audit_logs/audit-valid");
+
+  await assertSucceeds(eventRef.set(auditEventData("a", "audit-valid", "operator")));
+  await assertFails(otherOperatorDb.doc("companies/a/audit_logs/audit-valid").get());
+  await assertSucceeds(adminDb.doc("companies/a/audit_logs/audit-valid").get());
+  await assertFails(adminDb.doc("companies/a/audit_logs/audit-valid").update({ description: "Alterada" }));
+  await assertFails(adminDb.doc("companies/a/audit_logs/audit-valid").delete());
+});
+
+test("auditoria bloqueia falsificação de autor, empresa, horário e campos extras", async () => {
+  const db = env.authenticatedContext("operator").firestore();
+
+  await assertFails(db.doc("companies/a/audit_logs/spoof-author").set(
+    auditEventData("a", "spoof-author", "admin")
+  ));
+  await assertFails(db.doc("companies/a/audit_logs/wrong-tenant").set(
+    auditEventData("b", "wrong-tenant", "operator")
+  ));
+  await assertFails(db.doc("companies/a/audit_logs/future-event").set(
+    auditEventData("a", "future-event", "operator", Date.now() + 600000)
+  ));
+  await assertFails(db.doc("companies/a/audit_logs/secret-field").set(
+    auditEventData("a", "secret-field", "operator", Date.now(), { password: "não pode" })
+  ));
+});
+
 test("dívida de compatibilidade: usuário ou empresa inativos perdem acesso às subcoleções", async () => {
   await assertFails(env.authenticatedContext("inactive").firestore().doc("companies/a/products/p").get());
   await assertFails(env.authenticatedContext("offuser").firestore().doc("companies/off/products/p").get());
@@ -222,6 +271,73 @@ test("dados de contas a receber ficam isolados por empresa", async () => {
   await assertSucceeds(companyADb.doc("companies/a/customers/customer-immutable").get());
   await assertFails(companyADb.collection("companies/b/customers").get());
   await assertFails(companyBDb.collection("companies/a/receivables").get());
+});
+
+test("operador cancela contas abertas ou pagas e apaga conta cancelada com pagamentos", async () => {
+  const createdAt = Date.now() - 1000;
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    for (const id of ["cancel-keep", "delete-unpaid", "delete-paid", "cancel-invalid"]) {
+      await db.doc(`companies/a/receivables/${id}`).set(
+        receivableData("a", id, `customer-${id}`, "operator", createdAt)
+      );
+    }
+    await db.doc("companies/a/receivables/delete-paid").update({
+      outstandingAmountCents: 0,
+      status: "PAID",
+      lastPaymentId: "payment-delete-paid",
+      lastPaymentAt: createdAt + 500,
+      updatedAt: createdAt + 500
+    });
+    await db.doc("companies/a/receivable_payments/payment-delete-paid").set({
+      id: "payment-delete-paid",
+      receivableId: "delete-paid",
+      customerId: "customer-delete-paid",
+      amountCents: 3300,
+      paymentMethod: "PIX",
+      timestamp: createdAt + 500,
+      notes: "Pagamento lançado incorretamente",
+      createdByUid: "operator",
+      empresa_id: "a",
+      companyId: "a"
+    });
+  });
+
+  const operatorDb = env.authenticatedContext("operator").firestore();
+  const cancellationAt = Date.now();
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/cancel-keep").update({
+    status: "CANCELLED",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
+  await assertFails(operatorDb.doc("companies/a/receivables/delete-unpaid").delete());
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-unpaid").update({
+    status: "CANCELLED",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-unpaid").delete());
+  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-paid").update({
+    status: "CANCELLED",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
+  await assertFails(operatorDb.doc("companies/a/receivable_payments/payment-delete-paid").delete());
+  const deletePaidBatch = operatorDb.batch();
+  deletePaidBatch.delete(operatorDb.doc("companies/a/receivable_payments/payment-delete-paid"));
+  deletePaidBatch.delete(operatorDb.doc("companies/a/receivables/delete-paid"));
+  await assertSucceeds(deletePaidBatch.commit());
+  await assertFails(operatorDb.doc("companies/a/receivables/cancel-invalid").update({
+    status: "CANCELLED",
+    description: "Alteração não permitida",
+    updatedAt: cancellationAt,
+    updatedByUid: "operator"
+  }));
+  await assertFails(
+    env.authenticatedContext("operator-b").firestore()
+      .doc("companies/a/receivables/cancel-invalid")
+      .delete()
+  );
 });
 
 test("recuperação histórica exige administrador, tenant correto e sessão temporária", async () => {

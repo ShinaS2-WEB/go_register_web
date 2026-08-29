@@ -17,7 +17,7 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
   assert.match(index, /styles\.css\?v=inventory-filters-inline-v1/);
-  assert.match(index, /app\.js\?v=backup-recovery-pos-order-v3/);
+  assert.match(index, /app\.js\?v=receivable-history-delete-v1/);
   assert.match(index, /script-src 'self'/);
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
@@ -96,11 +96,8 @@ test("clientes podem ser removidos sem apagar o historico", async () => {
   assert.doesNotMatch(removalSource, /deleteDoc/);
 });
 
-test("lancamento de conta pode ser cancelado com validacao no backend", async () => {
-  const [app, backend] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
-    readFile(path.join(root, "functions", "index.js"), "utf8"),
-  ]);
+test("lancamento pode ser cancelado ou apagado sem depender do Blaze", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
   const start = app.indexOf("async function cancelReceivable(receivableKey)");
   const end = app.indexOf("function openReceivablePaymentHistory", start);
   const cancellationSource = app.slice(start, end);
@@ -108,10 +105,15 @@ test("lancamento de conta pode ser cancelado com validacao no backend", async ()
   assert.match(app, /data-cancel-receivable=/);
   assert.match(app, /\["CANCELLED", "Canceladas"\]/);
   assert.match(cancellationSource, /requestCancellationPassword\(\)/);
-  assert.match(cancellationSource, /cancelReceivableCallable/);
-  assert.match(backend, /exports\.cancelReceivable = onCall/);
-  assert.match(backend, /verifyCancellationPasswordHash\(password, storedHash\)/);
-  assert.match(backend, /status: "CANCELLED"/);
+  assert.match(cancellationSource, /openChoiceModal\(/);
+  assert.match(cancellationSource, /writeBatch\(db\)/);
+  assert.match(cancellationSource, /paymentSnapshot\.docs\.forEach/);
+  assert.match(cancellationSource, /batch\.delete\(reference\)/);
+  assert.match(cancellationSource, /status: "CANCELLED"/);
+  assert.match(cancellationSource, /updateDoc\(reference/);
+  assert.match(cancellationSource, /alreadyCancelled/);
+  assert.match(cancellationSource, /"PAID", "CANCELLED"/);
+  assert.doesNotMatch(app, /cancelReceivableCallable/);
 });
 
 test("filtro todas agrupa as dividas por cliente", async () => {

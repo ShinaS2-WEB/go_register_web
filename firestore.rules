@@ -91,6 +91,45 @@ service cloud.firestore {
         && boundedDocumentId(data.companyId)
         && data.companyId == companyId;
     }
+    function validAuditEvent(data, companyId, eventId) {
+      return data.keys().hasOnly(['id', 'empresa_id', 'companyId', 'action', 'entityType',
+          'entityId', 'description', 'amountCents', 'actorUid', 'actorName', 'actorRole',
+          'timestamp', 'source'])
+        && strictTenant(data, companyId)
+        && boundedDocumentId(eventId)
+        && data.id == eventId
+        && data.action is string
+        && data.action in ['SALE_CREATED', 'SALE_CANCELLED', 'CASH_OPENED', 'CASH_CLOSED',
+          'MANUAL_ENTRY_CREATED', 'MANUAL_EXIT_CREATED', 'MANUAL_ENTRY_CANCELLED',
+          'MANUAL_EXIT_CANCELLED', 'PRODUCT_CREATED', 'PRODUCT_UPDATED', 'PRODUCT_DELETED',
+          'STOCK_ADDED', 'STOCK_REMOVED', 'CUSTOMER_CREATED', 'CUSTOMER_UPDATED',
+          'RECEIVABLE_CREATED', 'RECEIVABLE_CANCELLED', 'RECEIVABLE_DELETED',
+          'PAYMENT_RECEIVED', 'USER_CREATED', 'USER_UPDATED', 'USER_DELETED',
+          'BACKUP_RESTORED']
+        && data.entityType is string
+        && data.entityType.size() > 0
+        && data.entityType.size() <= 64
+        && data.entityId is string
+        && data.entityId.size() > 0
+        && data.entityId.size() <= 128
+        && data.description is string
+        && data.description.size() > 0
+        && data.description.size() <= 500
+        && (data.amountCents == null || (data.amountCents is int
+          && data.amountCents >= 0 && data.amountCents <= 99999999999))
+        && boundedUid(data.actorUid)
+        && data.actorUid == request.auth.uid
+        && data.actorName is string
+        && data.actorName.size() > 0
+        && data.actorName.size() <= 120
+        && data.actorRole is string
+        && data.actorRole in ['OPERATOR', 'ADMIN', 'MASTER_ADMIN', 'PLATFORM_ADMIN']
+        && data.timestamp is int
+        && data.timestamp >= request.time.toMillis() - 300000
+        && data.timestamp <= request.time.toMillis() + 300000
+        && data.source is string
+        && data.source in ['ANDROID', 'WEB', 'ADMIN_WEB'];
+    }
     function validAndroidUpdate(data) {
       return data.keys().hasOnly([
           'schemaVersion', 'packageName', 'latestVersionCode', 'minimumVersionCode',
@@ -243,6 +282,28 @@ service cloud.firestore {
             && data.outstandingAmountCents < data.originalAmountCents
             && boundedDocumentId(data.lastPaymentId)
             && data.lastPaymentAt > 0));
+    }
+    function validReceivableCancellationUpdate() {
+      return resource.data.status in ['OPEN', 'PARTIAL', 'PAID']
+        && request.resource.data.status == 'CANCELLED'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'updatedAt', 'updatedByUid'])
+        && currentPaymentTimestamp(request.resource.data.updatedAt)
+        && request.resource.data.updatedAt >= resource.data.updatedAt
+        && request.resource.data.updatedByUid == request.auth.uid;
+    }
+    function deletableCancelledReceivable(data, companyId, receivableId) {
+      return strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == receivableId
+        && data.status == 'CANCELLED';
+    }
+    function deletablePaymentWithReceivable(data, companyId, paymentId) {
+      return strictTenant(data, companyId)
+        && boundedDocumentId(data.id)
+        && data.id == paymentId
+        && boundedDocumentId(data.receivableId)
+        && !existsAfter(receivablePath(companyId, data.receivableId));
     }
     function validPayment(data, companyId, paymentId) {
       return data.keys().hasOnly(['id', 'receivableId', 'customerId', 'amountCents',
@@ -462,8 +523,12 @@ service cloud.firestore {
             && existsAfter(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)))
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
-            && validReceivablePaymentUpdate(companyId, receivableId));
-        allow delete: if platformAdmin();
+            && (validReceivablePaymentUpdate(companyId, receivableId)
+              || validReceivableCancellationUpdate()));
+        allow delete: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesProvisioned(companyId)
+            && deletableCancelledReceivable(resource.data, companyId, receivableId));
       }
 
       match /receivable_payments/{paymentId} {
@@ -480,7 +545,17 @@ service cloud.firestore {
           || (activeRestoreSession(companyId)
             && validRestoredPayment(request.resource.data, companyId, paymentId)
             && existsAfter(receivablePath(companyId, request.resource.data.receivableId)));
-        allow delete: if platformAdmin();
+        allow delete: if platformAdmin()
+          || (companyUser(companyId)
+            && receivablesProvisioned(companyId)
+            && deletablePaymentWithReceivable(resource.data, companyId, paymentId));
+      }
+
+      match /audit_logs/{eventId} {
+        allow read: if platformAdmin() || companyAdmin(companyId);
+        allow create: if (platformAdmin() || companyUser(companyId))
+          && validAuditEvent(request.resource.data, companyId, eventId);
+        allow update, delete: if false;
       }
 
       match /{collectionName}/{documentId} {
