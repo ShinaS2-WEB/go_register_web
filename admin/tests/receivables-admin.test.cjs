@@ -83,9 +83,10 @@ test("billing é privado e entitlement é legível pela empresa", () => {
   const billingRules = sourceBetween(rulesSource, "match /billing/{moduleId}", "match /customers/{customerId}");
   assert.match(entitlementRules, /platformAdmin\(\) \|\| companyUser\(companyId\)/);
   assert.match(entitlementRules, /platformAdmin\(\)[\s\S]*validEntitlement/);
-  assert.match(billingRules, /allow read: if moduleId == 'accounts_receivable' && platformAdmin\(\)/);
+  assert.match(billingRules, /allow read: if moduleId in \['accounts_receivable', 'main_subscription'\] && platformAdmin\(\)/);
   assert.doesNotMatch(billingRules, /companyUser/);
   assert.match(billingRules, /validBilling\(request\.resource\.data\)/);
+  assert.match(billingRules, /validMainSubscription\(request\.resource\.data\)/);
 });
 
 test("novas contas exigem licença ativa e validade não expirada", () => {
