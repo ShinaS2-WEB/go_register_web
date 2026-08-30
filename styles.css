@@ -886,6 +886,22 @@ body.dark .report-result-icon .material-symbols-rounded {
   border-top: 4px solid var(--primary);
 }
 
+.business-analytics { display: grid; gap: 16px; }
+.business-analytics > .report-section-heading { padding: 0 4px; }
+.analytics-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.analytics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.analytics-ranking { padding: 16px; }
+.analytics-ranking h3 { margin: 0 0 14px; font-size: 17px; }
+.analytics-ranking__rows { display: grid; gap: 12px; }
+.analytics-ranking__row > div { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.analytics-ranking__row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.analytics-ranking__row strong { flex: 0 0 auto; }
+.analytics-ranking__row i { display: block; height: 7px; margin-top: 6px; border-radius: 999px; background: linear-gradient(90deg, var(--primary), #60a5fa); }
+.analytics-inactive { display: grid; gap: 8px; }
+.analytics-inactive > div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.analytics-inactive > div:last-child { border-bottom: 0; }
+.analytics-inactive strong { color: var(--muted); font-size: 13px; }
+
 .report-section-heading {
   display: flex;
   align-items: flex-start;
@@ -1845,6 +1861,11 @@ body.dark .transaction-row .amount.minus {
 
   .report-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-kpis,
+  .analytics-grid {
+    grid-template-columns: 1fr;
   }
 
   .dashboard-metrics {
