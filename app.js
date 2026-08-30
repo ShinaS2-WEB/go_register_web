@@ -33,6 +33,7 @@ import {
 } from "./receivables-core.mjs?v=customer-debt-order-v1";
 import { calculateExpectedRegisterBalance } from "./cash-register-core.mjs?v=all-payment-methods-v1";
 import { buildInternalAlerts } from "./alerts-core.mjs?v=internal-alerts-v1";
+import { calculateBusinessAnalytics } from "./business-analytics-core.mjs?v=business-analytics-v1";
 import {
   PRODUCT_STOCK_LEVEL,
   compareProductsByAvailabilityAndName,
@@ -131,6 +132,8 @@ const state = {
     cashHistoryDate: "",
     reportsPeriod: "all",
     reportsDate: new Date().toISOString().slice(0, 10),
+    reportsStartDate: millisToLocalDateInput(new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()),
+    reportsEndDate: millisToLocalDateInput(Date.now()),
     reportsMonth: new Date().getMonth(),
     inventoryStockLevel: "ALL",
     receivablesStatus: "OPEN",
@@ -585,6 +588,11 @@ function reportPeriodBounds(period) {
   const now = new Date();
   if (period === "daily") return todayBounds();
   if (period === "specificDate") return dateInputBounds(state.filters.reportsDate) || todayBounds();
+  if (period === "custom") {
+    const start = dateInputBounds(state.filters.reportsStartDate);
+    const end = dateInputBounds(state.filters.reportsEndDate);
+    return start && end && start[0] <= end[0] ? [start[0], end[1]] : todayBounds();
+  }
   if (period === "weekly") return weeklyReportBounds();
   if (period === "monthly") {
     const monthIndex = Number(state.filters.reportsMonth) || 0;
@@ -1995,6 +2003,56 @@ function reportSales(bounds) {
   });
 }
 
+function analyticsSales() {
+  return state.data.sales.map((record) => {
+    const sale = saleData(record);
+    return {
+      timestamp: saleTimestamp(record),
+      amount: saleAmount(record),
+      isCancelled: saleIsCancelled(record),
+      customerName: sale.customerName || sale.customer_name || "",
+      payments: salePaymentParts(record),
+      items: saleItems(record).map((item) => ({
+        productId: item.productId ?? item.product_id,
+        productName: item.productName || item.product_name || "",
+        quantity: Number(item.quantity) || 0,
+        subtotal: Number(item.subtotal) || (Number(item.unitPrice ?? item.unit_price) || 0) * (Number(item.quantity) || 0),
+      })),
+    };
+  });
+}
+
+function renderAnalyticsRanking(title, rows, valueFormatter, emptyMessage = "Sem dados neste período.") {
+  const maximum = Math.max(0, ...rows.map((item) => Number(item.value ?? item.revenue ?? item.quantity) || 0));
+  return `<article class="panel analytics-ranking"><h3>${escapeHtml(title)}</h3><div class="analytics-ranking__rows">${rows.map((item, index) => {
+    const value = Number(item.value ?? item.revenue ?? item.quantity) || 0;
+    const width = maximum > 0 ? Math.max(5, (value / maximum) * 100) : 0;
+    return `<div class="analytics-ranking__row"><div><span>${index + 1}. ${escapeHtml(item.name)}</span><strong>${escapeHtml(valueFormatter(item))}</strong></div><i style="width:${width.toFixed(1)}%"></i></div>`;
+  }).join("") || `<p class="muted">${escapeHtml(emptyMessage)}</p>`}</div></article>`;
+}
+
+function renderBusinessAnalytics(analytics, periodLabel) {
+  const comparison = analytics.comparisonPercent;
+  const comparisonLabel = comparison == null ? "Sem período anterior comparável" : `${comparison >= 0 ? "↑" : "↓"} ${Math.abs(comparison).toFixed(1)}% contra o período anterior`;
+  return `<section class="business-analytics">
+    <div class="report-section-heading"><div><h2>Indicadores do negócio</h2><p>${escapeHtml(periodLabel)}</p></div><small class="muted">Lucro estimado pelo custo atual dos produtos</small></div>
+    <div class="analytics-kpis">
+      <article class="report-kpi"><span>Ticket médio</span><strong>${money.format(analytics.averageTicket)}</strong><small>${analytics.saleCount} venda(s) de estoque</small></article>
+      <article class="report-kpi"><span>Lucro estimado</span><strong>${money.format(analytics.estimatedProfit)}</strong><small>Custo estimado: ${money.format(analytics.estimatedCost)}</small></article>
+      <article class="report-kpi"><span>Comparação</span><strong>${comparison == null ? "—" : `${comparison >= 0 ? "+" : ""}${comparison.toFixed(1)}%`}</strong><small>${escapeHtml(comparisonLabel)}</small></article>
+      <article class="report-kpi"><span>Produtos sem saída</span><strong>${analytics.inactiveProducts.length}</strong><small>No período selecionado</small></article>
+    </div>
+    <div class="analytics-grid">
+      ${renderAnalyticsRanking("Produtos mais vendidos", analytics.topProducts, (item) => `${formatDecimalInput(item.quantity)} un. · ${money.format(item.revenue)}`)}
+      ${renderAnalyticsRanking("Formas de pagamento", analytics.paymentMethods, (item) => money.format(item.value))}
+      ${renderAnalyticsRanking("Horários de maior movimento", analytics.peakHours, (item) => money.format(item.value))}
+      ${renderAnalyticsRanking("Dias da semana", analytics.peakWeekdays, (item) => money.format(item.value))}
+      ${analytics.topCustomers.length ? renderAnalyticsRanking("Clientes com maiores compras", analytics.topCustomers, (item) => money.format(item.value)) : ""}
+      <article class="panel analytics-ranking"><h3>Produtos sem saída</h3><div class="analytics-inactive">${analytics.inactiveProducts.map((item) => `<div><span>${escapeHtml(item.name)}</span><strong>Estoque: ${escapeHtml(formatDecimalInput(item.stockQuantity))}</strong></div>`).join("") || '<p class="muted">Todos os produtos tiveram saída no período.</p>'}</div></article>
+    </div>
+  </section>`;
+}
+
 function reportDetailedSaleItems(sales) {
   return sales.flatMap((record) => {
     const sale = saleData(record);
@@ -2154,6 +2212,7 @@ function renderReports() {
   const resultClass = "positive";
   const periodLabel = reportPeriodLabel(bounds);
   const manualSaleCount = financialMovements.filter((item) => item.kind === "entry" && !item.isCancelled).length;
+  const analytics = calculateBusinessAnalytics({ sales: analyticsSales(), products: state.data.products, bounds });
   return `
     <section class="section">
       <article class="panel report-export report-export--sales">
@@ -2171,6 +2230,7 @@ function renderReports() {
                     <option value="specificDate" ${state.filters.reportsPeriod === "specificDate" ? "selected" : ""}>Data especifica</option>
                     <option value="weekly" ${state.filters.reportsPeriod === "weekly" ? "selected" : ""}>Ultimos 7 dias</option>
                     <option value="monthly" ${state.filters.reportsPeriod === "monthly" ? "selected" : ""}>Mensal</option>
+                    <option value="custom" ${state.filters.reportsPeriod === "custom" ? "selected" : ""}>Período personalizado</option>
                   </select>
                 </span>
               </label>
@@ -2190,6 +2250,8 @@ function renderReports() {
                   </select>
                 </span>
               </label>
+              <label class="field report-date"><span>Início</span><span class="input-wrap">${icon("date_range")}<input id="reportStartDate" type="date" value="${escapeHtml(state.filters.reportsStartDate)}" /></span></label>
+              <label class="field report-date"><span>Fim</span><span class="input-wrap">${icon("event_available")}<input id="reportEndDate" type="date" value="${escapeHtml(state.filters.reportsEndDate)}" /></span></label>
             </div>
           </div>
           <div class="report-option-group report-option-group--actions">
@@ -2240,6 +2302,7 @@ function renderReports() {
           </article>
         </div>
       </section>
+      ${renderBusinessAnalytics(analytics, periodLabel)}
       <div class="panel table-wrap report-table">
         <div class="report-section-heading">
           <div>
@@ -2338,6 +2401,11 @@ function bindViewEvents() {
     state.filters.receivablesSearch = event.target.value;
     renderApp("receivablesSearch");
   });
+  ["reportStartDate", "reportEndDate"].forEach((id) => document.querySelector(`#${id}`)?.addEventListener("change", (event) => {
+    state.filters[id === "reportStartDate" ? "reportsStartDate" : "reportsEndDate"] = event.target.value;
+    state.filters.reportsPeriod = "custom";
+    renderApp();
+  }));
   document.querySelector("#auditCategory")?.addEventListener("change", (event) => {
     state.filters.auditCategory = event.target.value;
     renderApp();
