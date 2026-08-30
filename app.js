@@ -78,7 +78,8 @@ const receivablesCollections = {
 };
 
 const themeOptions = [
-  ["classic", "Classico"],
+  ["classic", "Clássico"],
+  ["white", "Branco"],
   ["emerald", "Esmeralda"],
   ["sunrise", "Amanhecer"],
   ["midnight", "Noturno"],
@@ -167,8 +168,8 @@ let checkoutInProgress = false;
 
 const navItems = [
   ["dashboard", "Painel", "dashboard", "all"],
-  ["pos", "Vendas", "point_of_sale", "all"],
-  ["cash", "Caixa", "payments", "all"],
+  ["pos", "Vendas", "payments", "all"],
+  ["cash", "Caixa", "point_of_sale", "all"],
   ["receivables", "Clientes e Contas", "request_quote", "receivables"],
   ["inventory", "Estoque", "inventory_2", "admin"],
   ["audit", "Auditoria", "policy", "admin"],
@@ -1488,7 +1489,7 @@ function renderDashboard() {
           </section>
           <section class="panel low-stock-panel">
             <h2>Produtos com Baixo Estoque</h2>
-            <div class="transactions">
+            <div class="transactions transactions-scroll transactions-scroll--low-stock">
               ${lowStock.map((item) => {
                 const stock = productStockDetails(item);
                 return `

@@ -1207,7 +1207,8 @@ tr:last-child td {
   scrollbar-gutter: stable;
 }
 
-.transactions-scroll--recent {
+.transactions-scroll--recent,
+.transactions-scroll--low-stock {
   max-height: 430px;
 }
 
@@ -2426,16 +2427,106 @@ body.dark .transaction-row .amount.minus {
   --danger: #c62e3a;
   --warning: #986000;
   --shadow: none;
+  --sidebar-bg: #07152c;
+  --sidebar-text: #ffffff;
+  --sidebar-muted: #aebbd0;
+  --sidebar-subtle: #91a2bb;
+  --sidebar-icon: #67a6ff;
+  --sidebar-line: rgba(255, 255, 255, 0.14);
+  --sidebar-line-soft: rgba(255, 255, 255, 0.08);
+  --sidebar-hover-bg: rgba(255, 255, 255, 0.07);
+  --sidebar-hover-text: #ffffff;
+  --sidebar-active-bg: #0a5bd4;
+  --sidebar-active-text: #ffffff;
+  --sidebar-active-marker: #9cc5ff;
+  --sidebar-control-bg: rgba(255, 255, 255, 0.06);
+  --sidebar-control-hover-bg: rgba(255, 255, 255, 0.12);
+  --sidebar-control-border: rgba(255, 255, 255, 0.18);
+  --sidebar-control-hover-border: rgba(255, 255, 255, 0.38);
+  --sidebar-shadow: 8px 0 30px rgba(3, 13, 30, 0.08);
+}
+
+body[data-theme="classic"],
+body[data-theme="white"] {
+  --primary: #063f99;
+  --primary-soft: #e6f0ff;
+  --accent: #0868f2;
+  --accent-soft: #e8f1ff;
+  --surface: #ffffff;
+  --background: #f4f7fb;
+  --text: #0a1224;
+  --muted: #5d6878;
+  --line: #d8e0ea;
+  --success: #137a4b;
+  --danger: #c62e3a;
+  --warning: #986000;
+  --shadow: none;
+}
+
+body[data-theme="white"] {
+  --sidebar-bg: #ffffff;
+  --sidebar-text: #0a1224;
+  --sidebar-muted: #536174;
+  --sidebar-subtle: #6b7788;
+  --sidebar-icon: #0868f2;
+  --sidebar-line: #d8e0ea;
+  --sidebar-line-soft: #e8edf3;
+  --sidebar-hover-bg: #edf4ff;
+  --sidebar-hover-text: #063f99;
+  --sidebar-active-bg: #0868f2;
+  --sidebar-active-text: #ffffff;
+  --sidebar-active-marker: #b8d5ff;
+  --sidebar-control-bg: #f4f7fb;
+  --sidebar-control-hover-bg: #e8f1ff;
+  --sidebar-control-border: #c8d2df;
+  --sidebar-control-hover-border: #8eb7ef;
+  --sidebar-shadow: 8px 0 30px rgba(10, 18, 36, 0.07);
+}
+
+body[data-theme="emerald"] {
+  --sidebar-bg: #075b53;
+  --sidebar-text: #ffffff;
+  --sidebar-muted: #c3ded9;
+  --sidebar-subtle: #a8d0c8;
+  --sidebar-icon: #86efac;
+  --sidebar-active-bg: #16a34a;
+  --sidebar-active-marker: #bbf7d0;
+}
+
+body[data-theme="sunrise"] {
+  --sidebar-bg: #7c2d12;
+  --sidebar-text: #fff7ed;
+  --sidebar-muted: #fed7aa;
+  --sidebar-subtle: #fdba74;
+  --sidebar-icon: #fdba74;
+  --sidebar-active-bg: #f97316;
+  --sidebar-active-text: #2b1105;
+  --sidebar-active-marker: #ffedd5;
 }
 
 body {
-  background:
-    linear-gradient(90deg, rgba(8, 104, 242, 0.035) 1px, transparent 1px) 0 0 / 32px 32px,
-    var(--background);
+  background: var(--background);
 }
 
 body.dark {
   --primary-soft: var(--accent-soft);
+  --sidebar-bg: color-mix(in srgb, var(--surface) 78%, var(--background));
+  --sidebar-text: var(--text);
+  --sidebar-muted: var(--muted);
+  --sidebar-subtle: var(--muted);
+  --sidebar-icon: var(--accent);
+  --sidebar-line: var(--line);
+  --sidebar-line-soft: color-mix(in srgb, var(--line) 68%, transparent);
+  --sidebar-hover-bg: var(--accent-soft);
+  --sidebar-hover-text: var(--text);
+  --sidebar-active-bg: var(--accent);
+  --sidebar-active-text: var(--on-accent);
+  --sidebar-active-marker: color-mix(in srgb, var(--accent) 40%, white);
+  --sidebar-control-bg: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  --sidebar-control-hover-bg: var(--accent-soft);
+  --sidebar-control-border: var(--line);
+  --sidebar-control-hover-border: var(--accent);
+  --sidebar-shadow: 8px 0 30px rgba(0, 0, 0, 0.18);
 }
 
 .material-symbols-rounded {
@@ -2498,44 +2589,68 @@ body.dark {
 
 .login-shell {
   position: relative;
+  isolation: isolate;
   overflow: hidden;
-  background: #07152c;
+  background: var(--background);
+  padding: clamp(24px, 5vw, 56px);
 }
 
 .login-shell::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: min(34vw, 420px);
-  background: #075bd8;
+  content: none;
 }
 
 .login-card {
   position: relative;
   width: min(440px, 100%);
   justify-items: stretch;
-  border: 0;
-  border-left: 5px solid var(--accent);
-  border-radius: 2px;
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
   padding: 34px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+  box-shadow: none;
 }
 
 .login-logo {
   justify-self: center;
-  width: 132px;
-  height: 132px;
-  border-radius: 4px;
+  width: 116px;
+  height: 116px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: none;
 }
 
 .login-title {
   margin-bottom: 20px;
+  color: var(--text);
   text-align: center;
   letter-spacing: -0.04em;
 }
 
 .company-login-badge {
-  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 4px;
+}
+
+.login-card .input-wrap {
+  overflow: hidden;
+}
+
+.login-card input:-webkit-autofill,
+.login-card input:-webkit-autofill:hover,
+.login-card input:-webkit-autofill:focus,
+.login-card input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px color-mix(in srgb, var(--surface) 94%, var(--background)) inset;
+  box-shadow: 0 0 0 1000px color-mix(in srgb, var(--surface) 94%, var(--background)) inset;
+  transition: background-color 9999s ease-out 0s;
+}
+
+.login-card input:autofill {
+  color: var(--text);
+  box-shadow: 0 0 0 1000px color-mix(in srgb, var(--surface) 94%, var(--background)) inset;
 }
 
 .app-shell {
@@ -2545,16 +2660,16 @@ body.dark {
 .sidebar {
   width: 268px;
   border-right: 0;
-  background: #07152c;
-  color: #ffffff;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
   padding: 22px 16px 18px;
-  box-shadow: 8px 0 30px rgba(3, 13, 30, 0.08);
+  box-shadow: var(--sidebar-shadow);
 }
 
 .brand {
   min-height: 58px;
   gap: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-bottom: 1px solid var(--sidebar-line);
   padding: 0 6px 18px;
 }
 
@@ -2565,26 +2680,26 @@ body.dark {
 }
 
 .brand strong {
-  color: #ffffff;
+  color: var(--sidebar-text);
   font-size: 16px;
   letter-spacing: 0.055em;
 }
 
 .active-company {
   margin: 0 0 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-bottom: 1px solid var(--sidebar-line);
   border-radius: 0;
   background: transparent;
-  color: #ffffff;
+  color: var(--sidebar-text);
   padding: 16px 6px;
 }
 
 .active-company > .material-symbols-rounded {
-  color: #67a6ff;
+  color: var(--sidebar-icon);
 }
 
 .active-company small {
-  color: #91a2bb;
+  color: var(--sidebar-subtle);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.11em;
@@ -2604,7 +2719,7 @@ body.dark {
   position: relative;
   min-height: 44px;
   border-radius: 3px;
-  color: #aebbd0;
+  color: var(--sidebar-muted);
   padding: 0 12px;
   font-size: 13px;
   font-weight: 650;
@@ -2620,23 +2735,23 @@ body.dark {
 }
 
 .nav button:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #ffffff;
+  background: var(--sidebar-hover-bg);
+  color: var(--sidebar-hover-text);
   padding-left: 15px;
 }
 
 .nav button.active {
-  background: #0a5bd4;
-  color: #ffffff;
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-text);
 }
 
 .nav button.active::before {
-  background: #9cc5ff;
+  background: var(--sidebar-active-marker);
 }
 
 .sidebar-footer {
   gap: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  border-top: 1px solid var(--sidebar-line);
   padding-top: 14px;
 }
 
@@ -2644,7 +2759,7 @@ body.dark {
 .user-pill {
   border: 0;
   border-radius: 0;
-  color: #9eabc0;
+  color: var(--sidebar-muted);
   padding: 9px 6px;
 }
 
@@ -2653,25 +2768,25 @@ body.dark {
 }
 
 .user-pill {
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--sidebar-line-soft);
   margin-top: 4px;
 }
 
 .user-pill strong {
-  color: #ffffff;
+  color: var(--sidebar-text);
 }
 
 .sidebar-footer .btn.secondary {
   justify-content: flex-start;
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: var(--sidebar-control-border);
   background: transparent;
-  color: #ffffff;
+  color: var(--sidebar-text);
   margin-top: 8px;
 }
 
 .sidebar-footer .btn.secondary:hover {
-  border-color: rgba(255, 255, 255, 0.38);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--sidebar-control-hover-border);
+  background: var(--sidebar-control-hover-bg);
 }
 
 .main {
@@ -2975,7 +3090,7 @@ tbody tr:hover {
 }
 
 body.dark .sidebar {
-  background: #07152c;
+  background: var(--sidebar-bg);
 }
 
 body.dark .panel,
@@ -3001,9 +3116,9 @@ body.dark .pos-cart {
   .sidebar {
     width: 100%;
     border-bottom: 0;
-    background: #07152c;
+    background: var(--sidebar-bg);
     padding: 12px 16px;
-    box-shadow: 0 8px 26px rgba(3, 13, 30, 0.14);
+    box-shadow: var(--sidebar-shadow);
   }
 
   .brand {
@@ -3019,11 +3134,11 @@ body.dark .pos-cart {
   }
 
   .nav button {
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--sidebar-line);
   }
 
   .sidebar-footer {
-    border-top-color: rgba(255, 255, 255, 0.12);
+    border-top-color: var(--sidebar-line);
   }
 
   .grid.cols-2 > .panel + .panel,
@@ -3037,12 +3152,12 @@ body.dark .pos-cart {
 }
 
 @media (max-width: 620px) {
-  .login-shell::before {
-    width: 8px;
+  .login-shell {
+    padding: 24px 14px;
   }
 
   .login-card {
-    border-left-width: 4px;
+    border-top-width: 4px;
     padding: 28px 22px;
   }
 
@@ -3082,15 +3197,15 @@ body.dark .pos-cart {
 .brand .sidebar-toggle {
   flex: 0 0 auto;
   margin-left: auto;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: #dbe8fb;
+  border: 1px solid var(--sidebar-control-border);
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-text);
 }
 
 .brand .sidebar-toggle:hover {
-  border-color: rgba(255, 255, 255, 0.3);
-  background: rgba(255, 255, 255, 0.12);
-  color: #ffffff;
+  border-color: var(--sidebar-control-hover-border);
+  background: var(--sidebar-control-hover-bg);
+  color: var(--sidebar-hover-text);
 }
 
 .nav-label,

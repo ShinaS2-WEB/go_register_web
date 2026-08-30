@@ -16,8 +16,8 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, ".github", "workflows", "firebase-deploy.yml"), "utf8"),
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
-  assert.match(index, /styles\.css\?v=blue-grid-redesign-v5/);
-  assert.match(index, /app\.js\?v=all-sections-v1/);
+  assert.match(index, /styles\.css\?v=adaptive-themes-v3/);
+  assert.match(index, /app\.js\?v=dashboard-scroll-v1/);
   assert.match(index, /script-src 'self'/);
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
@@ -37,6 +37,49 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
   assert.match(firebaseWorkflow, /run: npm test/);
   assert.match(firebaseWorkflow, /run: npm run emulators:test/);
   assert.match(localServer, /"\.mjs": "text\/javascript; charset=utf-8"/);
+});
+
+test("tema branco preserva o classico e adapta a barra lateral", async () => {
+  const [app, styles] = await Promise.all([
+    readFile(path.join(root, "app.js"), "utf8"),
+    readFile(path.join(root, "styles.css"), "utf8"),
+  ]);
+
+  assert.match(app, /\["classic", "Clássico"\]/);
+  assert.match(app, /\["white", "Branco"\]/);
+  assert.match(styles, /body\[data-theme="classic"\],\s*body\[data-theme="white"\]/);
+  assert.match(styles, /body\[data-theme="white"\]\s*{[^}]*--sidebar-bg:\s*#ffffff/s);
+  assert.match(styles, /\.sidebar\s*{[^}]*background:\s*var\(--sidebar-bg\)/s);
+  assert.match(styles, /body\.dark\s*{[^}]*--sidebar-bg:/s);
+});
+
+test("menu usa os icones corretos para vendas e caixa", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+
+  assert.match(app, /\["pos", "Vendas", "payments", "all"\]/);
+  assert.match(app, /\["cash", "Caixa", "point_of_sale", "all"\]/);
+});
+
+test("baixo estoque usa o mesmo limite de rolagem do extrato recente", async () => {
+  const [app, styles] = await Promise.all([
+    readFile(path.join(root, "app.js"), "utf8"),
+    readFile(path.join(root, "styles.css"), "utf8"),
+  ]);
+
+  assert.match(app, /transactions transactions-scroll transactions-scroll--low-stock/);
+  assert.match(styles, /\.transactions-scroll--recent,\s*\.transactions-scroll--low-stock\s*{\s*max-height:\s*430px;/s);
+});
+
+test("login acompanha o tema sem faixa rigida nem autofill amarelo", async () => {
+  const styles = await readFile(path.join(root, "styles.css"), "utf8");
+
+  assert.match(styles, /\.login-shell\s*{[^}]*var\(--background\)/s);
+  assert.doesNotMatch(styles, /\.login-shell\s*{[^}]*background:\s*#07152c/s);
+  assert.doesNotMatch(styles, /\.login-shell\s*{[^}]*gradient\(/s);
+  assert.match(styles, /\.login-shell::before\s*{\s*content:\s*none;/s);
+  assert.match(styles, /\.login-card\s*{[^}]*box-shadow:\s*none/s);
+  assert.match(styles, /\.login-card input:-webkit-autofill[\s\S]*-webkit-text-fill-color:\s*var\(--text\)/);
+  assert.match(styles, /\.login-card input:-webkit-autofill[\s\S]*color-mix\(in srgb, var\(--surface\)/);
 });
 
 test("fluxo de contas a receber nao exibe avisos explicativos redundantes", async () => {
