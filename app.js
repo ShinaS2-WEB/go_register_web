@@ -32,6 +32,7 @@ import {
   receivablesSummary,
 } from "./receivables-core.mjs?v=customer-debt-order-v1";
 import { calculateExpectedRegisterBalance } from "./cash-register-core.mjs?v=all-payment-methods-v1";
+import { buildInternalAlerts } from "./alerts-core.mjs?v=internal-alerts-v1";
 import {
   PRODUCT_STOCK_LEVEL,
   compareProductsByAvailabilityAndName,
@@ -102,6 +103,7 @@ const state = {
   receiptSettings: null,
   receivablesEntitlement: null,
   receivablesEntitlementLoaded: false,
+  mainSubscriptionEntitlement: null,
   auditLogs: [],
   auditLoaded: false,
   authStage: "loading",
@@ -152,6 +154,7 @@ const state = {
 };
 let unsubscribers = [];
 let receivablesEntitlementUnsubscribe = null;
+let mainSubscriptionUnsubscribe = null;
 let receivablesUnsubscribers = [];
 let receivablesSubscribedTenant = "";
 let auditUnsubscribe = null;
@@ -742,6 +745,8 @@ function clearSubscriptions() {
   unsubscribers = [];
   receivablesEntitlementUnsubscribe?.();
   receivablesEntitlementUnsubscribe = null;
+  mainSubscriptionUnsubscribe?.();
+  mainSubscriptionUnsubscribe = null;
   auditUnsubscribe?.();
   auditUnsubscribe = null;
   state.auditLogs = [];
@@ -753,6 +758,7 @@ function clearSubscriptions() {
   state.receiptSettings = null;
   state.receivablesEntitlement = null;
   state.receivablesEntitlementLoaded = false;
+  state.mainSubscriptionEntitlement = null;
   state.activeRegisterControl = null;
   state.activeRegisterControlInitialized = false;
   Object.keys(state.data).forEach((key) => { state.data[key] = []; });
@@ -837,6 +843,23 @@ function subscribeAccountsReceivableEntitlement() {
   });
 }
 
+function subscribeMainSubscriptionEntitlement() {
+  const companyId = tenantId();
+  if (!companyId) return;
+  mainSubscriptionUnsubscribe?.();
+  mainSubscriptionUnsubscribe = onSnapshot(
+    tenantDocument("entitlements", "main_subscription"),
+    (snapshot) => {
+      if (tenantId() !== companyId) return;
+      state.mainSubscriptionEntitlement = snapshot.exists() ? snapshot.data() : null;
+      if (state.user && !hasOpenModal()) renderApp();
+    },
+    () => {
+      if (tenantId() === companyId) state.mainSubscriptionEntitlement = null;
+    },
+  );
+}
+
 function syncLabel() {
   if (combinedFirebaseError()) return "Erro no Firebase";
   if (!isReady()) return "Sincronizando";
@@ -907,6 +930,7 @@ function subscribe() {
     unsubscribers.push(unsubscribe);
   });
   subscribeAccountsReceivableEntitlement();
+  subscribeMainSubscriptionEntitlement();
   subscribeAuditLogs();
 }
 
@@ -1392,6 +1416,12 @@ function renderDashboard() {
   const lowStock = state.data.products
     .filter((item) => productStockLevel(item) !== PRODUCT_STOCK_LEVEL.ACCEPTABLE)
     .sort(compareProductsByStockLevelAndName);
+  const alerts = buildInternalAlerts({
+    products: state.data.products,
+    receivables: state.receivables.receivables,
+    openRegister: currentOpenRegister(),
+    subscription: state.mainSubscriptionEntitlement,
+  });
 
   return `
     <section class="section">
@@ -1410,6 +1440,20 @@ function renderDashboard() {
           <strong>${todayCount}</strong>
         </article>
       </div>
+      <section class="panel internal-alerts">
+        <div class="internal-alerts__heading">
+          <h2>Alertas</h2>
+          <span class="badge ${alerts.length ? "bad" : "good"}">${alerts.length}</span>
+        </div>
+        <div class="internal-alerts__grid">
+          ${alerts.map((alert) => `
+            <article class="internal-alert internal-alert--${escapeHtml(alert.severity)}">
+              <span class="material-symbols-rounded">${alert.severity === "critical" ? "error" : alert.severity === "info" ? "calendar_clock" : "warning"}</span>
+              <div><strong>${escapeHtml(alert.title)}</strong><small>${escapeHtml(alert.message)}</small></div>
+            </article>
+          `).join("") || `<p class="muted">Tudo certo. Nenhum alerta no momento.</p>`}
+        </div>
+      </section>
       <div class="grid cols-2 dashboard-content">
         <section class="panel">
           <h2>Extrato Recente</h2>
