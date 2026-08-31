@@ -112,6 +112,7 @@ const state = {
   theme: initialTheme(),
   darkTheme: false,
   sidebarCollapsed: false,
+  notificationsOpen: false,
   activeRegisterControl: null,
   activeRegisterControlInitialized: false,
   data: {
@@ -1265,6 +1266,7 @@ function renderApp(focusId = null) {
 function renderView() {
   const title = [...navItems, ["stockHistory", "Historico Estoque"], ["cashHistory", "Historico Caixa"], ["categories", "Categorias"], ["suppliers", "Fornecedores"], ["users", "Usuarios"], ["reports", "Relatorios"]].find(([id]) => id === state.view)?.[1] || "Painel";
   const actions = renderTopActions();
+  const alerts = currentInternalAlerts();
   return `
     <header class="topbar">
       <div class="topbar-title">
@@ -1273,7 +1275,16 @@ function renderView() {
         </button>
         <h1>${title}</h1><span class="topbar-company">${escapeHtml(state.company?.name || "")}</span>
       </div>
-      <div>${actions}</div>
+      <div class="topbar-actions">
+        ${actions ? `<div class="topbar-page-actions">${actions}</div>` : ""}
+        <div class="notification-anchor">
+          <button class="icon-btn notification-trigger" type="button" data-action="toggle-notifications" aria-label="Abrir notificações" aria-expanded="${state.notificationsOpen}" aria-controls="notificationCenter">
+            ${icon("notifications")}
+            ${alerts.length ? `<span class="notification-badge" aria-label="${alerts.length} alertas">${alerts.length > 9 ? "9+" : alerts.length}</span>` : ""}
+          </button>
+          ${state.notificationsOpen ? renderNotificationCenter(alerts) : ""}
+        </div>
+      </div>
     </header>
     ${views[state.view]()}
   `;
@@ -1327,6 +1338,48 @@ function auditMatchesCategory(event, category) {
   if (category === "CASH") return event.action.includes("CASH") || event.action.includes("MANUAL");
   if (category === "RECEIVABLE") return ["RECEIVABLE", "PAYMENT", "CUSTOMER"].some((value) => event.action.includes(value));
   return event.action.includes(category);
+}
+
+function currentInternalAlerts() {
+  return buildInternalAlerts({
+    products: state.data.products,
+    receivables: state.receivables.receivables,
+    openRegister: currentOpenRegister(),
+    subscription: state.mainSubscriptionEntitlement,
+  });
+}
+
+function alertPresentation(alert) {
+  if (alert.id === "stock-zero") return { icon: "warning", target: "inventory", filter: "OUT" };
+  if (alert.id === "stock-low") return { icon: "inventory_2", target: "inventory", filter: "LOW" };
+  if (alert.id === "receivables-overdue") return { icon: "schedule", target: "receivables", filter: "OVERDUE" };
+  if (alert.id === "cash-open-long") return { icon: "point_of_sale", target: "cash" };
+  return { icon: "event", target: "settings" };
+}
+
+function renderNotificationCenter(alerts) {
+  const countLabel = `${alerts.length} ${alerts.length === 1 ? "alerta" : "alertas"}`;
+  return `
+    <button class="notification-scrim" type="button" data-close-notifications aria-label="Fechar notificações"></button>
+    <aside class="notification-center" id="notificationCenter" role="dialog" aria-modal="true" aria-labelledby="notificationTitle">
+      <header class="notification-center__header">
+        <div><h2 id="notificationTitle">Notificações</h2><p>${countLabel}</p></div>
+        <button class="icon-btn notification-close" type="button" data-close-notifications aria-label="Fechar notificações">${icon("close")}</button>
+      </header>
+      <div class="notification-list">
+        ${alerts.map((alert) => {
+          const presentation = alertPresentation(alert);
+          return `
+            <button class="notification-item notification-item--${escapeHtml(alert.severity)}" type="button" data-alert-id="${escapeHtml(alert.id)}">
+              <span class="notification-item__icon">${icon(presentation.icon)}</span>
+              <span class="notification-item__content"><strong>${escapeHtml(alert.title)}</strong><small>${escapeHtml(alert.message)}</small></span>
+              ${icon("chevron_right")}
+            </button>
+          `;
+        }).join("") || `<div class="notification-empty">${icon("notifications_none")}<strong>Nenhum alerta</strong><small>Tudo certo no momento.</small></div>`}
+      </div>
+    </aside>
+  `;
 }
 
 function renderAudit() {
@@ -1424,13 +1477,6 @@ function renderDashboard() {
   const lowStock = state.data.products
     .filter((item) => productStockLevel(item) !== PRODUCT_STOCK_LEVEL.ACCEPTABLE)
     .sort(compareProductsByStockLevelAndName);
-  const alerts = buildInternalAlerts({
-    products: state.data.products,
-    receivables: state.receivables.receivables,
-    openRegister: currentOpenRegister(),
-    subscription: state.mainSubscriptionEntitlement,
-  });
-
   return `
     <section class="section">
       <div class="grid cols-3 dashboard-metrics">
@@ -1448,20 +1494,6 @@ function renderDashboard() {
           <strong>${todayCount}</strong>
         </article>
       </div>
-      <section class="panel internal-alerts">
-        <div class="internal-alerts__heading">
-          <h2>Alertas</h2>
-          <span class="badge ${alerts.length ? "bad" : "good"}">${alerts.length}</span>
-        </div>
-        <div class="internal-alerts__grid">
-          ${alerts.map((alert) => `
-            <article class="internal-alert internal-alert--${escapeHtml(alert.severity)}">
-              <span class="material-symbols-rounded">${alert.severity === "critical" ? "error" : alert.severity === "info" ? "calendar_clock" : "warning"}</span>
-              <div><strong>${escapeHtml(alert.title)}</strong><small>${escapeHtml(alert.message)}</small></div>
-            </article>
-          `).join("") || `<p class="muted">Tudo certo. Nenhum alerta no momento.</p>`}
-        </div>
-      </section>
       <div class="grid cols-2 dashboard-content">
         <section class="panel">
           <h2>Extrato Recente</h2>
@@ -2370,6 +2402,8 @@ function renderSettings() {
 
 function bindViewEvents() {
   document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => runNamedAction(button.dataset.action)));
+  document.querySelectorAll("[data-close-notifications]").forEach((button) => button.addEventListener("click", closeNotifications));
+  document.querySelectorAll("[data-alert-id]").forEach((button) => button.addEventListener("click", () => openAlertDestination(button.dataset.alertId)));
   document.querySelector("[name='themeSelect']")?.addEventListener("change", (event) => setTheme(event.target.value));
   document.querySelectorAll("[data-report-period]").forEach((button) => button.addEventListener("click", () => exportSalesReport(button.dataset.reportPeriod)));
   document.querySelector("#reportsPeriod")?.addEventListener("change", (event) => {
@@ -2665,6 +2699,11 @@ const actions = {
     state.sidebarCollapsed = !state.sidebarCollapsed;
     renderApp();
   },
+  "toggle-notifications": () => {
+    state.notificationsOpen = !state.notificationsOpen;
+    renderApp();
+    if (state.notificationsOpen) document.querySelector(".notification-close")?.focus();
+  },
   "theme-toggle": () => toggleTheme(),
   "refresh-data": () => renderApp(),
   "export-inventory": () => exportInventoryCsv(),
@@ -2677,6 +2716,32 @@ const actions = {
   logout: () => logout(),
   checkout: () => openCheckoutModal(),
 };
+
+function closeNotifications() {
+  if (!state.notificationsOpen) return;
+  state.notificationsOpen = false;
+  renderApp();
+  document.querySelector(".notification-trigger")?.focus();
+}
+
+function openAlertDestination(alertId) {
+  const alert = currentInternalAlerts().find((item) => item.id === alertId);
+  if (!alert) return closeNotifications();
+  const destination = alertPresentation(alert);
+  if (!canAccess(destination.target)) {
+    state.notificationsOpen = false;
+    renderApp();
+    toast("Seu perfil não possui acesso a esta tela.");
+    return;
+  }
+  if (destination.target === "inventory" && destination.filter) state.filters.inventoryStockLevel = destination.filter;
+  if (destination.target === "receivables" && destination.filter) state.filters.receivablesStatus = destination.filter;
+  state.notificationsOpen = false;
+  state.view = destination.target;
+  state.search = "";
+  window.location.hash = `/${destination.target}`;
+  renderApp();
+}
 
 const adminActions = new Set(["product-new", "category-new", "supplier-new", "user-new", "stock-adjust", "export-inventory", "export-backup"]);
 
@@ -4680,6 +4745,10 @@ window.addEventListener("hashchange", () => {
     enforceAccess();
     if (state.user) renderApp();
   }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.notificationsOpen) closeNotifications();
 });
 
 init();
