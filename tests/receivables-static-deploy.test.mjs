@@ -16,8 +16,8 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, ".github", "workflows", "firebase-deploy.yml"), "utf8"),
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
-  assert.match(index, /styles\.css\?v=adaptive-themes-v3/);
-  assert.match(index, /app\.js\?v=dashboard-scroll-v1/);
+  assert.match(index, /styles\.css\?v=notification-center-v2/);
+  assert.match(index, /app\.js\?v=notification-center-v2/);
   assert.match(index, /script-src 'self'/);
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
