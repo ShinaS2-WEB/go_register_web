@@ -78,7 +78,8 @@ const receivablesCollections = {
 };
 
 const themeOptions = [
-  ["classic", "Classico"],
+  ["classic", "Clássico"],
+  ["white", "Branco"],
   ["emerald", "Esmeralda"],
   ["sunrise", "Amanhecer"],
   ["midnight", "Noturno"],
@@ -168,8 +169,8 @@ let checkoutInProgress = false;
 
 const navItems = [
   ["dashboard", "Painel", "dashboard", "all"],
-  ["pos", "Vendas", "point_of_sale", "all"],
-  ["cash", "Caixa", "payments", "all"],
+  ["pos", "Vendas", "payments", "all"],
+  ["cash", "Caixa", "point_of_sale", "all"],
   ["receivables", "Clientes e Contas", "request_quote", "receivables"],
   ["inventory", "Estoque", "inventory_2", "admin"],
   ["audit", "Auditoria", "policy", "admin"],
@@ -548,6 +549,10 @@ function enforceAccess() {
 
 function icon(name) {
   return `<span class="material-symbols-rounded" aria-hidden="true">${name}</span>`;
+}
+
+function sectionBlockHeading(title, description, glyph = "view_agenda") {
+  return `<div class="section-block-heading">${icon(glyph)}<div><h2>${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ""}</div></div>`;
 }
 
 function nextId(items) {
@@ -1225,18 +1230,21 @@ function renderApp(focusId = null) {
         <div class="brand">
           <img src="./assets/goregisterlogo.png" alt="" />
           <strong>GO REGISTER</strong>
+          <button class="icon-btn sidebar-toggle" type="button" data-action="toggle-sidebar" title="${state.sidebarCollapsed ? "Expandir painel lateral" : "Recolher painel lateral"}" aria-label="${state.sidebarCollapsed ? "Expandir painel lateral" : "Recolher painel lateral"}">
+            ${icon(state.sidebarCollapsed ? "keyboard_double_arrow_right" : "keyboard_double_arrow_left")}
+          </button>
         </div>
-        <div class="active-company">${icon("domain")}<span><small>Empresa</small><strong>${escapeHtml(state.company?.name || "-")}</strong></span></div>
+        <div class="active-company" title="Empresa: ${escapeHtml(state.company?.name || "-")}">${icon("domain")}<span><small>Empresa</small><strong>${escapeHtml(state.company?.name || "-")}</strong></span></div>
         <nav class="nav">
-          ${availableNavItems().map(([id, label, glyph]) => `<button data-view="${id}" class="${state.view === id ? "active" : ""}">${icon(glyph)} ${label}</button>`).join("")}
+          ${availableNavItems().map(([id, label, glyph]) => `<button data-view="${id}" class="${state.view === id ? "active" : ""}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${icon(glyph)}<span class="nav-label">${escapeHtml(label)}</span></button>`).join("")}
         </nav>
         <div class="sidebar-footer">
-          <div class="sync-pill ${combinedFirebaseError() ? "bad" : isReady() ? "good" : ""}">
+          <div class="sync-pill ${combinedFirebaseError() ? "bad" : isReady() ? "good" : ""}" title="${escapeHtml(syncLabel())}" aria-label="${escapeHtml(syncLabel())}">
             <span></span>
-            ${escapeHtml(syncLabel())}
+            <span class="sync-label">${escapeHtml(syncLabel())}</span>
           </div>
           <div class="user-pill"><strong>${escapeHtml(state.user.username)}</strong>${escapeHtml(roleLabel(state.user.role))}</div>
-          <button class="btn secondary" id="logoutBtn">${icon("logout")} Sair</button>
+          <button class="btn secondary" id="logoutBtn" title="Sair" aria-label="Sair">${icon("logout")}<span class="logout-label">Sair</span></button>
         </div>
       </aside>
       <main class="main">
@@ -1270,9 +1278,6 @@ function renderView() {
   return `
     <header class="topbar">
       <div class="topbar-title">
-        <button class="icon-btn sidebar-toggle" type="button" data-action="toggle-sidebar" title="${state.sidebarCollapsed ? "Mostrar painel lateral" : "Esconder painel lateral"}" aria-label="${state.sidebarCollapsed ? "Mostrar painel lateral" : "Esconder painel lateral"}">
-          ${icon(state.sidebarCollapsed ? "menu_open" : "menu")}
-        </button>
         <h1>${title}</h1><span class="topbar-company">${escapeHtml(state.company?.name || "")}</span>
       </div>
       <div class="topbar-actions">
@@ -1386,9 +1391,10 @@ function renderAudit() {
   const search = state.filters.auditSearch.trim().toLocaleLowerCase("pt-BR");
   const events = state.auditLogs.filter((event) => auditMatchesCategory(event, state.filters.auditCategory)
     && `${event.actorName || ""} ${event.description || ""} ${event.entityId || ""}`.toLocaleLowerCase("pt-BR").includes(search));
-  return `<section class="section">
-    <article class="panel">
-      <div class="toolbar">
+  return `<section class="section sectioned-page">
+    <article class="section-block data-table-block">
+      ${sectionBlockHeading("Registro de auditoria", "Consulte operações realizadas por usuários e dispositivos", "policy")}
+      <div class="toolbar section-filters">
         <label class="field"><span>Tipo de operação</span><select id="auditCategory">
           ${[["ALL", "Todos"], ["SALE", "Vendas"], ["CASH", "Caixa"], ["PRODUCT", "Estoque"], ["RECEIVABLE", "Contas"], ["USER", "Usuários"]]
             .map(([value, label]) => `<option value="${value}" ${state.filters.auditCategory === value ? "selected" : ""}>${label}</option>`).join("")}
@@ -1478,47 +1484,59 @@ function renderDashboard() {
     .filter((item) => productStockLevel(item) !== PRODUCT_STOCK_LEVEL.ACCEPTABLE)
     .sort(compareProductsByStockLevelAndName);
   return `
-    <section class="section">
-      <div class="grid cols-3 dashboard-metrics">
-        <article class="panel metric primary">
-          <span>Rendimento do Dia</span>
-          <strong>${money.format(totalToday)}</strong>
-          <small>${comparisonText}</small>
-        </article>
-        <article class="panel metric secondary">
-          <span>Rendimento Semanal</span>
-          <strong>${money.format(weekly)}</strong>
-        </article>
-        <article class="panel metric tertiary">
-          <span>Transacoes Hoje</span>
-          <strong>${todayCount}</strong>
-        </article>
-      </div>
-      <div class="grid cols-2 dashboard-content">
-        <section class="panel">
-          <h2>Extrato Recente</h2>
-          <div class="transactions transactions-scroll transactions-scroll--recent">
-            ${renderGroupedTransactionRows(transactions) || `<p class="muted">Nenhuma transacao registrada.</p>`}
-          </div>
-        </section>
-        <section class="panel low-stock-panel">
-          <h2>Produtos com Baixo Estoque</h2>
-          <div class="transactions">
-            ${lowStock.map((item) => {
-              const stock = productStockDetails(item);
-              return `
-                <div class="transaction-row">
-                  <div><strong>${escapeHtml(item.name)}</strong><div class="muted">EAN: ${escapeHtml(item.barcode || "-")}</div></div>
-                  <div class="stock-level stock-level--summary">
-                    <span class="badge ${stock.badgeClass}">${escapeHtml(stock.label)}</span>
-                    <strong class="stock-level-value">${escapeHtml(stock.quantityLabel)}</strong>
+    <section class="section dashboard-page">
+      <section class="dashboard-block dashboard-summary">
+        <div class="dashboard-block-heading">
+          ${icon("monitoring")}
+          <div><h2>Resumo do dia</h2><p>Indicadores financeiros e volume de transações</p></div>
+        </div>
+        <div class="grid cols-3 dashboard-metrics">
+          <article class="panel metric primary">
+            <span>Rendimento do Dia</span>
+            <strong>${money.format(totalToday)}</strong>
+            <small>${comparisonText}</small>
+          </article>
+          <article class="panel metric secondary">
+            <span>Rendimento Semanal</span>
+            <strong>${money.format(weekly)}</strong>
+          </article>
+          <article class="panel metric tertiary">
+            <span>Transacoes Hoje</span>
+            <strong>${todayCount}</strong>
+          </article>
+        </div>
+      </section>
+      <section class="dashboard-block dashboard-operation">
+        <div class="dashboard-block-heading">
+          ${icon("query_stats")}
+          <div><h2>Operação recente</h2><p>Movimentações financeiras e situação do estoque</p></div>
+        </div>
+        <div class="grid cols-2 dashboard-content">
+          <section class="panel">
+            <h2>Extrato Recente</h2>
+            <div class="transactions transactions-scroll transactions-scroll--recent">
+              ${renderGroupedTransactionRows(transactions) || `<p class="muted">Nenhuma transacao registrada.</p>`}
+            </div>
+          </section>
+          <section class="panel low-stock-panel">
+            <h2>Produtos com Baixo Estoque</h2>
+            <div class="transactions transactions-scroll transactions-scroll--low-stock">
+              ${lowStock.map((item) => {
+                const stock = productStockDetails(item);
+                return `
+                  <div class="transaction-row">
+                    <div><strong>${escapeHtml(item.name)}</strong><div class="muted">EAN: ${escapeHtml(item.barcode || "-")}</div></div>
+                    <div class="stock-level stock-level--summary">
+                      <span class="badge ${stock.badgeClass}">${escapeHtml(stock.label)}</span>
+                      <strong class="stock-level-value">${escapeHtml(stock.quantityLabel)}</strong>
+                    </div>
                   </div>
-                </div>
-              `;
-            }).join("") || `<p class="muted">Nenhum produto com estoque baixo.</p>`}
-          </div>
-        </section>
-      </div>
+                `;
+              }).join("") || `<p class="muted">Nenhum produto com estoque baixo.</p>`}
+            </div>
+          </section>
+        </div>
+      </section>
     </section>
   `;
 }
@@ -1552,7 +1570,7 @@ function renderGroupedTransactionRows(transactions) {
 function renderPos() {
   const openRegister = currentOpenRegister();
   if (!openRegister) {
-    return `<section class="panel" style="min-height: 420px; display:grid; place-items:center;"><div style="text-align:center">${icon("shopping_cart")}<h2>Por favor, ABRA o caixa primeiro!</h2><button class="btn" data-action="open-register">${icon("lock_open")} Abrir Caixa</button></div></section>`;
+    return `<section class="section-block empty-state" style="min-height: 420px; display:grid; place-items:center;"><div style="text-align:center">${icon("shopping_cart")}<h2>Por favor, ABRA o caixa primeiro!</h2><button class="btn" data-action="open-register">${icon("lock_open")} Abrir Caixa</button></div></section>`;
   }
   const filtered = state.data.products
     .filter((item) => `${item.name} ${item.barcode || ""}`.toLowerCase().includes(state.search.toLowerCase()))
@@ -1560,10 +1578,10 @@ function renderPos() {
   const total = state.cart.reduce((sum, item) => sum + item.product.sellingPrice * item.quantity, 0);
   const finalTotal = Math.max(0, total - state.discount);
   return `
-    <section class="panel pos-layout">
+    <section class="section-block pos-layout pos-section-block">
       <div class="pos-products">
+        ${sectionBlockHeading("Produtos", "Pesquise e adicione itens ao pedido", "inventory_2")}
         <label class="field search"><span>Pesquisar</span><span class="input-wrap">${icon("search")}<input id="posSearch" value="${escapeHtml(state.search)}" placeholder="Pesquisar por nome ou codigo..." /></span></label>
-        <h3>Produtos Disponiveis</h3>
         <div class="product-list">
           ${filtered.map((product) => {
             const tracksStock = productTracksStock(product);
@@ -1579,7 +1597,8 @@ function renderPos() {
         </div>
       </div>
       <aside class="pos-cart">
-        <div class="toolbar"><h3>Resumo do Pedido</h3>${state.cart.length ? `<button class="btn danger" data-action="cart-clear">${icon("delete_sweep")} Limpar</button>` : ""}</div>
+        ${sectionBlockHeading("Resumo do pedido", "Itens, quantidades e total da venda", "shopping_cart")}
+        <div class="toolbar pos-cart-actions">${state.cart.length ? `<button class="btn danger" data-action="cart-clear">${icon("delete_sweep")} Limpar</button>` : ""}</div>
         <div class="cart-list">
           ${state.cart.map((item) => `
             <div class="cart-row">
@@ -1637,7 +1656,7 @@ function renderInventory() {
         <td><button class="icon-btn" data-edit-product="${item.id}" title="Editar">${icon("edit")}</button><button class="icon-btn" data-delete-product="${item.id}" title="Excluir">${icon("delete")}</button></td>
       </tr>
     `;
-  }).join(""), stockFilter, "inventory-filters-toolbar");
+  }).join(""), stockFilter, "inventory-filters-toolbar", "Produtos cadastrados");
 }
 
 function renderStockHistory() {
@@ -1660,22 +1679,28 @@ function renderStockHistory() {
         <td>${escapeHtml(publicStockMovementReason(item.reason) || "-")}</td>
       </tr>
     `;
-  }).join(""));
+  }).join(""), "", "", "Movimentações de estoque");
 }
 
-function tableSection(searchId, headers, rows, extraFilters = "", toolbarClass = "") {
+function tableSection(searchId, headers, rows, extraFilters = "", toolbarClass = "", sectionTitle = "Registros") {
   return `
-    <section class="section">
-      <div class="toolbar ${toolbarClass}">
-        <label class="field search"><span>Pesquisar</span><span class="input-wrap">${icon("search")}<input id="${searchId}" value="${escapeHtml(state.search)}" placeholder="Pesquisar..." /></span></label>
-        ${extraFilters}
-      </div>
-      <div class="panel table-wrap">
-        <table>
-          <thead><tr>${headers.map((item) => `<th>${item}</th>`).join("")}</tr></thead>
-          <tbody>${rows || `<tr><td colspan="${headers.length}" class="muted">Nenhum registro encontrado.</td></tr>`}</tbody>
-        </table>
-      </div>
+    <section class="section sectioned-page">
+      <section class="section-block filter-section-block">
+        ${sectionBlockHeading("Filtros", "Use a busca e os filtros disponíveis para localizar registros", "filter_alt")}
+        <div class="toolbar section-filters ${toolbarClass}">
+          <label class="field search"><span>Pesquisar</span><span class="input-wrap">${icon("search")}<input id="${searchId}" value="${escapeHtml(state.search)}" placeholder="Pesquisar..." /></span></label>
+          ${extraFilters}
+        </div>
+      </section>
+      <section class="section-block data-table-block">
+        ${sectionBlockHeading(sectionTitle, "Dados disponíveis nesta seção", "table_rows")}
+        <div class="table-wrap">
+          <table>
+            <thead><tr>${headers.map((item) => `<th>${item}</th>`).join("")}</tr></thead>
+            <tbody>${rows || `<tr><td colspan="${headers.length}" class="muted">Nenhum registro encontrado.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </section>
     </section>
   `;
 }
@@ -1684,8 +1709,10 @@ function renderCash() {
   const open = currentOpenRegister();
   const report = open ? registerReport(open) : null;
   return `
-    <section class="section">
-      <div class="grid cols-3">
+    <section class="section sectioned-page cash-page">
+      <section class="section-block cash-summary-block">
+        ${sectionBlockHeading("Situação do caixa", "Status, saldos e ações do caixa atual", "point_of_sale")}
+        <div class="grid cols-3 sectioned-metrics">
         <article class="panel metric ${open ? "secondary" : "tertiary"}">
           <span>Status do Caixa</span>
           <strong>${open ? "Aberto" : "Fechado"}</strong>
@@ -1700,11 +1727,13 @@ function renderCash() {
           ${open ? `<strong>${money.format(report.expected)}</strong>` : ""}
           ${open ? `<button class="btn danger" data-action="close-register">${icon("lock")} Fechar Caixa</button>` : `<button class="btn" data-action="open-register">${icon("lock_open")} Abrir Caixa</button>`}
         </article>
-      </div>
-      <div class="panel">
-        <div class="toolbar"><h2>Movimentos Financeiros</h2><div><button class="btn secondary" data-action="entry-new" ${open ? "" : 'disabled title="Abra o caixa para fazer uma venda"'}>${icon("add")} Venda manual</button> <button class="btn secondary" data-action="exit-new" ${open ? "" : 'disabled title="Abra o caixa para registrar uma saída"'}>${icon("remove")} Saida</button></div></div>
+        </div>
+      </section>
+      <section class="section-block cash-movements-block">
+        ${sectionBlockHeading("Movimentos financeiros", "Vendas, entradas e saídas do caixa", "receipt_long")}
+        <div class="toolbar cash-actions"><div><button class="btn secondary" data-action="entry-new" ${open ? "" : 'disabled title="Abra o caixa para fazer uma venda"'}>${icon("add")} Venda manual</button> <button class="btn secondary" data-action="exit-new" ${open ? "" : 'disabled title="Abra o caixa para registrar uma saída"'}>${icon("remove")} Saida</button></div></div>
         <div class="transactions transactions-scroll transactions-scroll--cash">${renderGroupedTransactionRows(allTransactions()) || `<p class="muted">Sem movimentos.</p>`}</div>
-      </div>
+      </section>
     </section>
   `;
 }
@@ -1832,16 +1861,20 @@ function renderCashHistory() {
     .filter((item) => inBounds(item.openingTimestamp, bounds))
     .sort((a, b) => (Number(b.openingTimestamp) || 0) - (Number(a.openingTimestamp) || 0));
   return `
-    <section class="section">
-      <div class="toolbar filters-toolbar">
+    <section class="section sectioned-page">
+      <section class="section-block filter-section-block">
+        ${sectionBlockHeading("Filtros", "Consulte os caixas por data de abertura", "filter_alt")}
+        <div class="toolbar section-filters filters-toolbar">
         <label class="field date-filter">
           <span>${state.filters.cashHistoryDate ? `Filtrando: ${formatDateInputLabel(state.filters.cashHistoryDate)}` : "Filtrar por data"}</span>
           <span class="input-wrap">${icon("calendar_month")}<input id="cashHistoryDate" type="date" value="${escapeHtml(state.filters.cashHistoryDate)}" /></span>
         </label>
         ${state.filters.cashHistoryDate ? `<button class="btn secondary" data-action="clear-cash-history-filter">${icon("filter_list_off")} Limpar filtro</button>` : ""}
-      </div>
-      <div class="panel table-wrap">
-        <table>
+        </div>
+      </section>
+      <section class="section-block data-table-block">
+        ${sectionBlockHeading("Histórico de caixas", "Aberturas, fechamentos, saldos e diferenças", "history")}
+        <div class="table-wrap"><table>
           <thead><tr><th>ID</th><th>Status</th><th>Abertura</th><th>Fechamento</th><th>Vendas</th><th>Entradas</th><th>Saidas</th><th>Saldo esperado</th><th>Saldo informado</th><th>Diferenca</th></tr></thead>
           <tbody>
             ${rows.map((register) => {
@@ -1863,8 +1896,8 @@ function renderCashHistory() {
               `;
             }).join("") || `<tr><td colspan="10" class="muted">${state.filters.cashHistoryDate ? "Nenhum fechamento nesta data." : "Nenhum caixa aberto ainda."}</td></tr>`}
           </tbody>
-        </table>
-      </div>
+        </table></div>
+      </section>
     </section>
   `;
 }
@@ -1872,13 +1905,13 @@ function renderCashHistory() {
 function renderCategories() {
   return tableSection("genericSearch", ["Nome", ""], state.data.categories
     .filter((item) => item.name.toLowerCase().includes(state.search.toLowerCase()))
-    .map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td><button class="icon-btn" data-edit-category="${item.id}">${icon("edit")}</button><button class="icon-btn" data-delete-category="${item.id}">${icon("delete")}</button></td></tr>`).join(""));
+    .map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td><button class="icon-btn" data-edit-category="${item.id}">${icon("edit")}</button><button class="icon-btn" data-delete-category="${item.id}">${icon("delete")}</button></td></tr>`).join(""), "", "", "Categorias cadastradas");
 }
 
 function renderSuppliers() {
   return tableSection("genericSearch", ["Nome", "Contato", "Email", ""], state.data.suppliers
     .filter((item) => `${item.name} ${item.contact || ""} ${item.email || ""}`.toLowerCase().includes(state.search.toLowerCase()))
-    .map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.contact || "-")}</td><td>${escapeHtml(item.email || "-")}</td><td><button class="icon-btn" data-edit-supplier="${item.id}">${icon("edit")}</button><button class="icon-btn" data-delete-supplier="${item.id}">${icon("delete")}</button></td></tr>`).join(""));
+    .map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.contact || "-")}</td><td>${escapeHtml(item.email || "-")}</td><td><button class="icon-btn" data-edit-supplier="${item.id}">${icon("edit")}</button><button class="icon-btn" data-delete-supplier="${item.id}">${icon("delete")}</button></td></tr>`).join(""), "", "", "Fornecedores cadastrados");
 }
 
 function renderUsers() {
@@ -1898,7 +1931,7 @@ function renderUsers() {
           ${!isSelf && canManage ? `<button class="icon-btn" data-toggle-user="${userKey}" title="Ativar/Inativar">${icon("toggle_on")}</button><button class="icon-btn" data-delete-user="${userKey}" title="Excluir">${icon("delete")}</button>` : ""}
         </td>
       </tr>`;
-    }).join(""));
+    }).join(""), "", "", "Usuários cadastrados");
 }
 
 const receivableStatusLabels = {
@@ -1961,14 +1994,17 @@ function renderReceivables() {
   const summary = receivablesSummary(state.receivables.receivables);
 
   return `
-    <section class="section receivables-page">
-      <div class="grid receivables-metrics">
+    <section class="section receivables-page sectioned-page">
+      <section class="section-block receivables-summary-block">
+        ${sectionBlockHeading("Resumo de recebimentos", "Saldos pendentes, atrasados e recebidos", "account_balance_wallet")}
+        <div class="grid receivables-metrics sectioned-metrics">
         <article class="panel metric primary"><span>Total a receber</span><strong>${money.format(summary.outstandingAmountCents / 100)}</strong><small>${state.receivables.receivables.filter((item) => ["OPEN", "PARTIAL", "OVERDUE"].includes(receivableDisplayStatus(item))).length} conta(s) pendente(s)</small></article>
         <article class="panel metric tertiary"><span>Total atrasado</span><strong>${money.format(summary.overdueAmountCents / 100)}</strong><small>Saldo com vencimento anterior a hoje</small></article>
         <article class="panel metric secondary"><span>Total recebido</span><strong>${money.format(summary.receivedAmountCents / 100)}</strong><small>Pagamentos registrados neste módulo</small></article>
-      </div>
+        </div>
+      </section>
 
-      <div class="panel">
+      <section class="section-block receivables-accounts-block">
         <div class="toolbar receivables-toolbar">
           <div><h2>Contas a receber</h2><p class="muted">Contas cadastradas manualmente, sem ligação automática com vendas.</p></div>
           <div class="receivables-filters">
@@ -2004,9 +2040,9 @@ function renderReceivables() {
             }).join("") || `<tr><td colspan="7" class="muted">Nenhuma conta encontrada para este filtro.</td></tr>`}</tbody>
           </table></div>
         ` : `<p class="muted">Carregando clientes e contas...</p>`}
-      </div>
+      </section>
 
-      <div class="panel">
+      <section class="section-block receivables-customers-block">
         <div class="toolbar"><div><h2>Clientes</h2><p class="muted">Cadastro utilizado somente pelo módulo de contas a receber.</p></div></div>
         <div class="table-wrap"><table class="receivables-customers-table">
           <thead><tr><th>Nome</th><th>Telefone</th><th>Documento</th><th>Observações</th><th>Ações</th></tr></thead>
@@ -2024,7 +2060,7 @@ function renderReceivables() {
             </tr>`;
           }).join("") || `<tr><td colspan="5" class="muted">Nenhum cliente encontrado.</td></tr>`}</tbody>
         </table></div>
-      </div>
+      </section>
     </section>
   `;
 }
@@ -2074,6 +2110,7 @@ function renderBusinessAnalytics(analytics, periodLabel) {
       <article class="report-kpi"><span>Comparação</span><strong>${comparison == null ? "—" : `${comparison >= 0 ? "+" : ""}${comparison.toFixed(1)}%`}</strong><small>${escapeHtml(comparisonLabel)}</small></article>
       <article class="report-kpi"><span>Produtos sem saída</span><strong>${analytics.inactiveProducts.length}</strong><small>No período selecionado</small></article>
     </div>
+    <div class="report-subsection-heading"><h3>Análises detalhadas</h3><span>Rankings e padrões do período</span></div>
     <div class="analytics-grid">
       ${renderAnalyticsRanking("Produtos mais vendidos", analytics.topProducts, (item) => `${formatDecimalInput(item.quantity)} un. · ${money.format(item.revenue)}`)}
       ${renderAnalyticsRanking("Formas de pagamento", analytics.paymentMethods, (item) => money.format(item.value))}
@@ -2247,8 +2284,8 @@ function renderReports() {
   const analytics = calculateBusinessAnalytics({ sales: analyticsSales(), products: state.data.products, bounds });
   return `
     <section class="section">
-      <article class="panel report-export report-export--sales">
-        <div class="report-action"><h2>Relatorio de vendas</h2></div>
+      <article class="section-block report-export report-export--sales">
+        ${sectionBlockHeading("Relatório de vendas", "Selecione o período para consultar ou exportar", "monitoring")}
         <div class="report-options">
           <div class="report-option-group">
             <div class="report-filter-grid">
@@ -2303,6 +2340,10 @@ function renderReports() {
         </div>
       </div>
       <section class="report-results">
+        <div class="report-block-heading">
+          ${icon("account_balance_wallet")}
+          <div><h2>Resumo financeiro</h2><p>${escapeHtml(periodLabel)}</p></div>
+        </div>
         <article class="report-result-hero report-result-hero--${resultClass}">
           <div>
             <span>Total de vendas (estoque + manual)</span>
@@ -2376,14 +2417,14 @@ function renderConsolidatedReportRow(item) {
 
 function renderSettings() {
   return `
-    <section class="section">
-      <article class="panel settings-theme">
-        <h2>Personalizacao</h2>
+    <section class="section sectioned-page settings-page">
+      <article class="section-block settings-theme">
+        ${sectionBlockHeading("Personalização", "Ajuste a aparência do sistema", "palette")}
         ${select("themeSelect", "Tema", themeOptions, state.theme)}
       </article>
       ${isAdmin() ? `
-        <div class="panel">
-          <h2>Gestao do Sistema</h2>
+        <section class="section-block settings-management-block">
+          ${sectionBlockHeading("Gestão do sistema", "Cadastros, históricos, relatórios e auditoria", "admin_panel_settings")}
           <div class="settings-grid">
             <button class="settings-row" data-view="users">${icon("manage_accounts")}<span><strong>Gerenciar Usuarios</strong><small>Criar funcionarios, alterar senhas e status</small></span></button>
             <button class="settings-row" data-view="reports">${icon("monitoring")}<span><strong>Relatorios e Exportacao</strong><small>PDF, Excel e backup de dados</small></span></button>
@@ -2393,9 +2434,12 @@ function renderSettings() {
             <button class="settings-row" data-view="categories">${icon("category")}<span><strong>Categorias</strong><small>Cadastro auxiliar de produtos</small></span></button>
             <button class="settings-row" data-view="suppliers">${icon("local_shipping")}<span><strong>Fornecedores</strong><small>Cadastro auxiliar de produtos</small></span></button>
           </div>
-        </div>
+        </section>
       ` : ""}
-      <div class="panel danger-zone"><h2>Sessão da empresa</h2><button class="settings-row" data-action="exit-company">${icon("domain_disabled")}<span><strong>Sair da empresa</strong><small>Encerra a conta e remove a empresa ativa deste dispositivo</small></span></button></div>
+      <section class="section-block danger-zone">
+        ${sectionBlockHeading("Sessão da empresa", "Controles da empresa ativa neste dispositivo", "domain")}
+        <button class="settings-row" data-action="exit-company">${icon("domain_disabled")}<span><strong>Sair da empresa</strong><small>Encerra a conta e remove a empresa ativa deste dispositivo</small></span></button>
+      </section>
     </section>
   `;
 }
