@@ -214,20 +214,149 @@ button {
   padding: 30px;
 }
 
-.login-logo {
-  width: 160px;
-  height: 160px;
-  object-fit: contain;
-  border-radius: 8px;
-  background: #fff;
-  padding: 10px;
-}
-
 .login-title {
   margin: 0 0 28px;
   color: var(--primary);
   font-size: 28px;
   font-weight: 800;
+}
+
+.login-brand-logo {
+  width: 112px;
+  height: 112px;
+  justify-self: center;
+  object-fit: contain;
+  border: 0;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: none;
+  filter: none;
+}
+
+.login-transition {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: linear-gradient(145deg, #002d72 0%, #004aad 52%, #0878df 100%);
+  color: #fff;
+  padding: 28px;
+}
+
+.login-transition::before,
+.login-transition::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 50%;
+}
+
+.login-transition::before {
+  width: min(74vw, 760px);
+  aspect-ratio: 1;
+  top: -42%;
+  right: -15%;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.login-transition::after {
+  width: min(58vw, 600px);
+  aspect-ratio: 1;
+  bottom: -38%;
+  left: -10%;
+  background: rgba(0, 26, 73, 0.12);
+}
+
+.login-transition__content {
+  width: min(390px, 100%);
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  animation: login-transition-enter 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.login-transition__logo {
+  width: 104px;
+  height: 104px;
+  object-fit: contain;
+  border: 6px solid rgba(255, 255, 255, 0.2);
+  border-radius: 18px;
+  background: #fff;
+  padding: 7px;
+  box-shadow: 0 20px 50px rgba(0, 25, 75, 0.3);
+}
+
+.login-transition__eyebrow {
+  margin-top: 26px;
+  color: #bfe0ff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.login-transition h1 {
+  margin: 8px 0 0;
+  color: #fff;
+  font-size: clamp(28px, 5vw, 40px);
+  line-height: 1.1;
+  letter-spacing: -0.045em;
+  overflow-wrap: anywhere;
+}
+
+.login-transition p {
+  margin: 9px 0 0;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 15px;
+}
+
+.login-transition__progress {
+  width: min(240px, 72vw);
+  height: 3px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.22);
+  margin-top: 34px;
+}
+
+.login-transition__progress span {
+  display: block;
+  width: 45%;
+  height: 100%;
+  border-radius: inherit;
+  background: #fff;
+  animation: login-transition-progress 850ms ease-in-out infinite;
+}
+
+.login-transition small {
+  margin-top: 12px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+}
+
+@keyframes login-transition-enter {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes login-transition-progress {
+  from { transform: translateX(-115%); }
+  to { transform: translateX(245%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-transition__content,
+  .login-transition__progress span {
+    animation: none;
+  }
+
+  .login-transition__progress span {
+    width: 100%;
+  }
 }
 
 .field {
@@ -2036,11 +2165,6 @@ body.dark .transaction-row .amount.minus {
     padding: 28px 18px;
   }
 
-  .login-logo {
-    width: 126px;
-    height: 126px;
-  }
-
   .login-title {
     margin-bottom: 18px;
     font-size: 24px;
@@ -2478,6 +2602,30 @@ body.dark .transaction-row .amount.minus {
   min-width: 760px;
 }
 
+.receivables-list-scroll,
+.audit-list-scroll {
+  max-height: min(56vh, 520px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) var(--surface);
+}
+
+.receivables-list-scroll thead th,
+.audit-list-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+  box-shadow: inset 0 -1px var(--line);
+}
+
+.receivables-list-scroll:focus-visible,
+.audit-list-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .receivables-row-actions {
   white-space: nowrap;
 }
@@ -2772,33 +2920,286 @@ body.dark {
   width: min(440px, 100%);
   justify-items: stretch;
   border: 1px solid var(--line);
-  border-top: 4px solid var(--accent);
   border-radius: 8px;
   background: var(--surface);
   color: var(--text);
   padding: 34px;
-  box-shadow: none;
+  box-shadow: 0 16px 48px rgba(15, 35, 65, 0.08);
 }
 
-.login-logo {
-  justify-self: center;
-  width: 116px;
-  height: 116px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: none;
+.login-shell .login-card {
+  padding: clamp(24px, 5vw, 38px);
+  gap: 20px;
+  border-width: 1px;
 }
+
+.login-card .login-brand-logo {
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
+.login-card .login-title {
+  margin: 0;
+  text-align: center;
+  font-size: clamp(24px, 5vw, 28px);
+  line-height: 1.2;
+  letter-spacing: -0.035em;
+  color: var(--text);
+}
+
+.login-shell .login-card .login-subtitle {
+  margin: -10px 0 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.login-card .field { gap: 8px; }
+.login-card .field > span:first-child { color: var(--text); font-size: 12px; }
+.login-shell .login-card .input-wrap {
+  min-height: 52px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--background));
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.login-card .input-wrap input { font-size: 16px; }
+.login-card .input-wrap input::placeholder { color: var(--muted); opacity: .85; }
+.login-shell .login-card .btn.full {
+  min-height: 50px;
+  border-radius: 4px;
+  font-size: 15px;
+}
+.login-card .btn[type="submit"] { margin-top: 4px; }
+.login-card .btn[type="submit"]:hover:not(:disabled) { filter: brightness(.95); }
+.login-card .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.login-shell .login-card #changeCompany {
+  min-height: 36px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: -8px;
+}
+.login-card #changeCompany:hover { text-decoration: underline; }
+.login-card .error:empty { display: none; }
+.login-card .error:not(:empty) { margin: 0; min-height: 0; font-size: 13px; line-height: 1.5; }
+.login-card .login-company {
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--background));
+}
+.login-card .login-company small { font-size: 10px; letter-spacing: .06em; }
+.login-card .login-company strong { font-size: 16px; }
 
 .login-title {
-  margin-bottom: 20px;
+  margin: 4px 0 0;
   color: var(--text);
   text-align: center;
   letter-spacing: -0.04em;
 }
 
-.company-login-badge {
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
-  border-radius: 4px;
+.receivables-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.receivables-view-header h2 { margin: 0; font-size: 20px; }
+.receivables-view-header p { margin: 5px 0 0; font-size: 13px; }
+.receivables-view-switch {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.receivables-view-switch button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.receivables-view-switch button:hover { background: var(--accent-soft); color: var(--primary); }
+.receivables-view-switch button[aria-pressed="true"] { background: var(--primary); color: var(--surface); }
+.receivables-view-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 620px) {
+  .receivables-view-header { flex-direction: column; align-items: stretch; gap: 14px; }
+  .receivables-view-switch button { flex: 1; }
+}
+
+.receivable-customer-link {
+  border: 0;
+  padding: 6px 0;
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.receivable-customer-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.receivable-customer-content {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px;
+}
+
+.modal.receivable-customer-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 100%);
+  max-height: 90dvh;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .24);
+}
+
+.receivable-customer-modal > header,
+.receivable-customer-modal > footer {
+  flex-shrink: 0;
+  padding: 20px 24px;
+}
+
+.customer-profile { display: flex; align-items: center; gap: 14px; }
+.customer-profile > div { min-width: 0; overflow-wrap: anywhere; }
+.customer-avatar {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: 15px;
+  background: var(--accent-soft);
+  color: var(--primary);
+}
+.customer-eyebrow { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.customer-summary {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 1fr;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+.customer-summary-main { padding: 20px; background: var(--accent-soft); }
+.customer-summary-main > span { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }
+.customer-summary-main > strong { display: block; font-size: clamp(22px, 3vw, 30px); color: var(--primary); margin: 10px 0 4px; }
+.customer-summary-main > small { color: var(--muted); font-size: 11px; }
+.customer-summary-item { display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 20px; }
+.customer-summary-item > span { color: var(--muted); font-size: 12px; }
+.customer-summary-item > strong { font-size: 19px; }
+.customer-summary-item + .customer-summary-item { border-left: 1px solid var(--line); }
+.customer-summary-item .customer-overdue { color: var(--danger); }
+.customer-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 26px 0 14px; }
+.customer-section-heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
+.customer-section-heading h3 > .material-symbols-rounded { color: var(--muted); }
+.customer-count { padding: 3px 9px; border-radius: 20px; background: var(--accent-soft); color: var(--primary); font-size: 12px; font-weight: 700; }
+.customer-debt-card { padding: 18px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.customer-debt-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.customer-debt-title > strong { overflow-wrap: anywhere; font-size: 14px; }
+.customer-debt-title .badge { flex-shrink: 0; }
+.customer-debt-due { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); margin: 8px 0 16px; }
+.customer-debt-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; border-top: 1px solid var(--line); padding-top: 14px; margin: 0; }
+.customer-debt-values dt { font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+.customer-debt-values dd { font-size: 14px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.customer-debt-values > div:last-child dd { color: var(--primary); font-weight: 800; }
+.customer-empty { display: flex; align-items: center; justify-content: center; gap: 10px; border: 1px dashed var(--line); border-radius: 12px; padding: 28px 16px; margin: 0; color: var(--muted); font-size: 13px; }
+
+.receivable-customer-accounts {
+  display: grid;
+  gap: 8px;
+}
+
+.receivable-customer-modal .receivable-history-list {
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  gap: 0;
+}
+
+.receivable-customer-modal .receivable-history-row {
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 16px 4px;
+  font-size: 13px;
+}
+
+.receivable-customer-modal .receivable-history-row strong {
+  color: var(--success);
+  font-size: 16px;
+}
+
+@media (max-width: 600px) {
+  .receivable-customer-content { padding: 16px; }
+  .receivable-customer-modal > header,
+  .receivable-customer-modal > footer { padding: 16px; }
+  .customer-summary { grid-template-columns: 1fr 1fr; }
+  .customer-summary-main { grid-column: 1 / -1; }
+  .customer-summary-item { padding: 16px; }
+  .customer-summary-item > strong { font-size: 17px; }
+  .customer-debt-card { padding: 14px; }
+  .customer-debt-title { flex-wrap: wrap; }
+  .customer-debt-values { gap: 8px; }
+  .customer-debt-values dd { font-size: 12px; }
+}
+
+.login-card .login-subtitle {
+  margin: -7px 0 5px;
+}
+
+.login-company {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 3px 0 5px;
+  text-align: center;
+}
+
+.login-company small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.login-company strong {
+  max-width: 100%;
+  color: var(--accent);
+  font-size: 21px;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
 }
 
 .login-card .input-wrap {
@@ -2958,15 +3359,15 @@ body.dark {
 }
 
 .main {
-  padding: 30px clamp(22px, 3vw, 46px) 44px;
+  padding: 20px clamp(22px, 3vw, 46px) 44px;
 }
 
 .topbar {
-  min-height: 60px;
+  min-height: 48px;
   align-items: flex-start;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 28px;
-  padding-bottom: 18px;
+  margin-bottom: 18px;
+  padding-bottom: 10px;
 }
 
 .topbar-title {
@@ -3334,12 +3735,12 @@ body.dark .pos-cart {
   }
 
   .main {
-    padding: 18px 14px 30px;
+    padding: 14px 14px 30px;
   }
 
   .topbar {
-    margin-bottom: 18px;
-    padding-bottom: 14px;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
   }
 
   .panel {

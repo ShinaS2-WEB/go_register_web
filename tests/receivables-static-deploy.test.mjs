@@ -16,11 +16,11 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
     readFile(path.join(root, ".github", "workflows", "firebase-deploy.yml"), "utf8"),
     readFile(path.join(root, "scripts", "serve.js"), "utf8"),
   ]);
-  assert.match(index, /styles\.css\?v=notification-center-v2/);
-  assert.match(index, /app\.js\?v=notification-center-v2/);
+  assert.match(index, /styles\.css\?v=site-ui-release-v3/);
+  assert.match(index, /app\.js\?v=site-ui-release-v3/);
   assert.match(index, /script-src 'self'/);
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
-  assert.match(app, /\.\/receivables-core\.mjs\?v=customer-debt-order-v1/);
+  assert.match(app, /\.\/receivables-core\.mjs\?v=partial-payment-filter-v2/);
   assert.match(app, /\.\/stock-order-core\.mjs\?v=pos-availability-order-v1/);
   assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
   assert.match(workflow, /cp cash-register-core\.mjs stock-order-core\.mjs _site\//);
@@ -37,6 +37,18 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
   assert.match(firebaseWorkflow, /run: npm test/);
   assert.match(firebaseWorkflow, /run: npm run emulators:test/);
   assert.match(localServer, /"\.mjs": "text\/javascript; charset=utf-8"/);
+});
+
+test("login usa o vinculo atual e traduz erros de autenticacao", async () => {
+  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const start = app.indexOf('function renderUserLogin(error = "")');
+  const end = app.indexOf("function isAllowedPassword", start);
+  const loginSource = app.slice(start, end);
+
+  assert.match(loginSource, /aliasSnapshot\.data\(\)\.email \|\| aliasSnapshot\.data\(\)\.authEmail/);
+  assert.match(loginSource, /renderUserLogin\(userLoginErrorMessage\(loginError\)\)/);
+  assert.match(loginSource, /auth\/invalid-credential/);
+  assert.match(loginSource, /error\?\.code === "permission-denied"/);
 });
 
 test("tema branco preserva o classico e adapta a barra lateral", async () => {
@@ -77,7 +89,7 @@ test("login acompanha o tema sem faixa rigida nem autofill amarelo", async () =>
   assert.doesNotMatch(styles, /\.login-shell\s*{[^}]*background:\s*#07152c/s);
   assert.doesNotMatch(styles, /\.login-shell\s*{[^}]*gradient\(/s);
   assert.match(styles, /\.login-shell::before\s*{\s*content:\s*none;/s);
-  assert.match(styles, /\.login-card\s*{[^}]*box-shadow:\s*none/s);
+  assert.match(styles, /\.login-card\s*{[^}]*box-shadow:\s*0 16px 48px/s);
   assert.match(styles, /\.login-card input:-webkit-autofill[\s\S]*-webkit-text-fill-color:\s*var\(--text\)/);
   assert.match(styles, /\.login-card input:-webkit-autofill[\s\S]*color-mix\(in srgb, var\(--surface\)/);
 });

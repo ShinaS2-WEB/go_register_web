@@ -212,6 +212,12 @@ export function filterReceivables(receivables, filter = "ALL", now = Date.now())
   return (receivables || []).filter((receivable) => {
     const status = receivableDisplayStatus(receivable, now);
     if (normalizedFilter === "ALL") return status !== "CANCELLED";
+    if (normalizedFilter === "OPEN") return ["OPEN", "PARTIAL", "OVERDUE"].includes(status);
+    if (normalizedFilter === "PARTIAL") {
+      return ["PARTIAL", "OVERDUE"].includes(status)
+        && (String(receivable.status || "").toUpperCase() === "PARTIAL"
+          || Number(receivable.outstandingAmountCents) < Number(receivable.originalAmountCents));
+    }
     return status === normalizedFilter;
   });
 }

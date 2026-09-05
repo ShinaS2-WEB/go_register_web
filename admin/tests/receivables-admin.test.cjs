@@ -78,6 +78,20 @@ test("lease da limpeza bloqueia concorrência recente e libera retomada segura",
   assert.equal(context.canStart({dataDeletionInProgress: true}, now), true);
 });
 
+test("painel repara vinculos de login e libera empresa presa em limpeza", () => {
+  const synchronization = sourceBetween(adminSource, "async function syncCompanyUserAliases", "async function syncReceiptBranding");
+  const accountCreation = sourceBetween(adminSource, "async function createAccount", "async function replaceUserPassword");
+  const passwordReset = sourceBetween(adminSource, "async function replaceUserPassword", "async function saveCompany");
+  const userSave = sourceBetween(adminSource, "async function saveUser", "async function removeAdministrator");
+
+  for (const source of [synchronization, accountCreation, passwordReset, userSave]) {
+    assert.match(source, /authEmail[,:][\s\S]*email:authEmail/);
+  }
+  assert.match(adminSource, /async function recoverCompanyDataDeletion\(company\)/);
+  assert.match(adminSource, /dataDeletionInProgress:deleteField\(\)/);
+  assert.match(adminSource, /await recoverCompanyDataDeletion\(company\)/);
+});
+
 test("billing é privado e entitlement é legível pela empresa", () => {
   const entitlementRules = sourceBetween(rulesSource, "match /entitlements/{moduleId}", "match /billing/{moduleId}");
   const billingRules = sourceBetween(rulesSource, "match /billing/{moduleId}", "match /customers/{customerId}");

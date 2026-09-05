@@ -21,7 +21,7 @@ test("assinatura controla plano, vencimento, tolerância, módulo e acesso", () 
 });
 
 test("cache do painel é invalidado para a nova versão", () => {
-  assert.match(html, /admin\.js\?v=subscription-panel-v1/);
-  assert.match(html, /admin\.css\?v=subscription-panel-v1/);
+  assert.match(html, /admin\.js\?v=site-ui-release-v3/);
+  assert.match(html, /admin\.css\?v=admin-ui-release-v3/);
 });
 

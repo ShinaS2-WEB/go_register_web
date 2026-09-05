@@ -82,6 +82,24 @@ test("pagamentos parciais reduzem o saldo e pagamento total encerra a conta", ()
   assert.throws(() => applyReceivablePayment({ status: "PAID", outstandingAmountCents: 0 }, 100), /ja esta paga/i);
 });
 
+test("conta permanece em aberto apos pagamentos parciais ate a quitacao", () => {
+  const now = new Date(2026, 7, 20, 12).getTime();
+  for (const dueAt of [new Date(2026, 7, 19).getTime(), new Date(2026, 7, 21).getTime()]) {
+    const open = { id: "conta", status: "OPEN", originalAmountCents: 10000, outstandingAmountCents: 10000, dueAt };
+    assert.deepEqual(filterReceivables([open], "OPEN", now), [open]);
+    const partial = { ...open, ...applyReceivablePayment(open, 3000) };
+    assert.equal(partial.outstandingAmountCents, 7000);
+    assert.deepEqual(filterReceivables([partial], "OPEN", now), [partial]);
+    assert.deepEqual(filterReceivables([partial], "PARTIAL", now), [partial]);
+    const paid = { ...partial, ...applyReceivablePayment(partial, 7000) };
+    const cancelled = { ...partial, status: "CANCELLED" };
+    assert.deepEqual(filterReceivables([paid, cancelled], "OPEN", now), []);
+    assert.deepEqual(filterReceivables([paid, cancelled], "PARTIAL", now), []);
+    assert.deepEqual(filterReceivables([paid], "PAID", now), [paid]);
+    assert.deepEqual(filterReceivables([open], "PARTIAL", now), []);
+  }
+});
+
 test("resumo e filtros usam saldos em centavos", () => {
   const now = new Date(2026, 7, 20, 12).getTime();
   const items = [
