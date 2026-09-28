@@ -1590,7 +1590,7 @@ function renderTransactionRow(item) {
       </div>
       <div class="row-actions">
         <strong class="amount ${klass}">${sign} ${money.format(item.amount)}</strong>
-        ${!item.isCancelled ? `<button class="icon-btn" title="Cancelar" data-cancel-kind="${item.kind}" data-cancel-id="${item.refId}">${icon("cancel")}</button>` : ""}
+        ${item.kind === "sale" || !item.isCancelled ? `<button class="icon-btn" type="button" aria-label="Opções da transação" aria-haspopup="dialog" data-transaction-kind="${item.kind}" data-transaction-id="${escapeHtml(String(item.refId))}">${icon("expand_more")}</button>` : ""}
       </div>
     </div>
   `;
@@ -2493,6 +2493,7 @@ function renderSettings() {
 }
 
 function bindViewEvents() {
+  document.querySelectorAll("[data-transaction-kind]").forEach((button) => button.addEventListener("click", () => openTransactionOptions(button.dataset.transactionKind, button.dataset.transactionId)));
   document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => runNamedAction(button.dataset.action)));
   document.querySelectorAll("[data-close-notifications]").forEach((button) => button.addEventListener("click", closeNotifications));
   document.querySelectorAll("[data-alert-id]").forEach((button) => button.addEventListener("click", () => openAlertDestination(button.dataset.alertId)));
@@ -4578,6 +4579,7 @@ function buildSaleReceiptText(result) {
     socialMedia ? `Redes sociais: ${socialMedia}` : "",
     "",
     "COMPROVANTE DE VENDA",
+    ...(sale.isCancelled ? ["VENDA CANCELADA — SEM VALIDADE"] : []),
     formatReceiptDateTime(sale.timestamp),
     "",
     ...receiptItems.map((item) => `${formatReceiptQuantity(item.quantity)}x ${item.name} - ${money.format(item.subtotalCents / 100)}`),
@@ -4633,6 +4635,42 @@ async function printSaleReceipt() {
   window.setTimeout(finishPrinting, 1000);
 }
 
+function openTransactionOptions(kind, id) {
+  const transaction = allTransactions().find((item) => item.kind === kind && String(item.refId) === String(id));
+  if (!transaction) return toast("Transação não encontrada. Atualize o extrato.");
+  const root = document.querySelector("#modalRoot");
+  root.innerHTML = `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="transactionOptionsTitle">
+    <header><h2 id="transactionOptionsTitle">Opções da transação</h2><button type="button" class="icon-btn" data-dismiss-options aria-label="Fechar">${icon("close")}</button></header>
+    ${kind === "sale" ? `<button class="btn full" type="button" data-reopen-receipt>${icon("receipt_long")} Ver recibo / Imprimir</button>` : ""}
+    ${!transaction.isCancelled ? `<button class="btn secondary full" type="button" data-cancel-option>${icon("cancel")} Cancelar lançamento</button>` : ""}
+  </section></div>`;
+  const close = () => { root.innerHTML = ""; };
+  root.querySelector("[data-dismiss-options]").onclick = close;
+  root.querySelector(".modal-backdrop").onclick = (event) => { if (event.target === event.currentTarget) close(); };
+  root.querySelector(".modal").onkeydown = (event) => { if (event.key === "Escape") close(); };
+  root.querySelector("[data-cancel-option]")?.addEventListener("click", () => { close(); cancelTransaction(kind, id); });
+  root.querySelector("[data-reopen-receipt]")?.addEventListener("click", () => {
+    const record = state.data.sales.find((item) => String(docKey(item, saleData(item).id)) === String(id));
+    if (!record) { close(); return toast("Venda não encontrada."); }
+    const saved = saleData(record);
+    openSaleReceipt({
+      sale: { ...saved, timestamp: saleTimestamp(record), finalAmount: saleAmount(record), isCancelled: saleIsCancelled(record) },
+      receiptItems: saleItems(record).map((item) => {
+        const productId = item.productId ?? item.product_id;
+        const product = state.data.products.find((entry) => String(entry.id) === String(productId));
+        return {
+          name: item.productName || item.name || product?.name || `Produto #${productId}`,
+          quantity: Number(item.quantity) || 0,
+          unitPriceCents: Math.round(Number(item.unitPrice ?? item.unit_price ?? 0) * 100),
+          subtotalCents: Math.round(Number(item.subtotal ?? Number(item.unitPrice ?? 0) * Number(item.quantity ?? 0)) * 100),
+        };
+      }),
+      payments: salePaymentParts(record).map((part) => ({ method: part.method, amountCents: Math.round(part.amount * 100) })),
+    });
+  });
+  root.querySelector("button")?.focus();
+}
+
 function openSaleReceipt(result) {
   const { sale, receiptItems, payments } = result;
   const company = state.company || {};
@@ -4650,10 +4688,11 @@ function openSaleReceipt(result) {
     <div class="modal-backdrop">
       <section class="modal receipt-modal" role="dialog" aria-modal="true" aria-labelledby="saleReceiptTitle">
         <header>
-          <div><span class="receipt-success">${icon("check_circle")} VENDA FINALIZADA!</span><h2 id="saleReceiptTitle">Comprovante de Venda</h2></div>
+          <div><span class="receipt-success">${icon(sale.isCancelled ? "cancel" : "check_circle")} ${sale.isCancelled ? "VENDA CANCELADA" : "VENDA FINALIZADA!"}</span><h2 id="saleReceiptTitle">Comprovante de Venda</h2></div>
           <button class="icon-btn" type="button" data-close-receipt aria-label="Fechar">${icon("close")}</button>
         </header>
         <div class="receipt-paper" id="saleReceipt">
+          ${sale.isCancelled ? `<strong>VENDA CANCELADA — SEM VALIDADE</strong>` : ""}
           <div class="receipt-company">
             ${logoUrl ? `<img class="receipt-logo" src="${escapeHtml(logoUrl)}" alt="Logo de ${escapeHtml(company.name || "empresa")}" referrerpolicy="no-referrer" decoding="sync" fetchpriority="high">` : ""}
             <strong>${escapeHtml(company.name || "GO REGISTER")}</strong>
