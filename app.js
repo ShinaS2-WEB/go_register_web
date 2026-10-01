@@ -4717,7 +4717,7 @@ function openSaleReceipt(result) {
           </div>
           <div class="receipt-total"><span>TOTAL</span><strong>${escapeHtml(money.format(sale.finalAmount))}</strong></div>
           ${receiptMessage || exchangePolicy ? `
-            <div class="receipt-company" style="border-top: 1px dashed var(--line); padding-top: 14px; text-align: left; overflow-wrap: anywhere; white-space: pre-line;">
+            <div class="receipt-company receipt-footer">
               ${receiptMessage ? `<span>${escapeHtml(receiptMessage)}</span>` : ""}
               ${exchangePolicy ? `<span><b>Política de troca:</b> ${escapeHtml(exchangePolicy)}</span>` : ""}
             </div>
