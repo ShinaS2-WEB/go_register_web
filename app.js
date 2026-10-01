@@ -1117,7 +1117,7 @@ function userLoginErrorMessage(error) {
     return "Usuário ou senha inválidos.";
   }
   if (error?.code === "permission-denied") {
-    return "O acesso desta empresa está bloqueado. Libere a empresa no painel administrativo.";
+    return "Não foi possível autorizar o acesso. Confira no painel administrativo a liberação da empresa, limpezas pendentes e o vínculo deste usuário.";
   }
   return error?.message || "Acesso negado.";
 }
