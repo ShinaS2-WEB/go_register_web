@@ -3378,10 +3378,10 @@ async function cancelReceivable(receivableKey) {
   if (!alreadyCancelled && !(await openConfirmModal("Confirmar cancelamento", "Os pagamentos integrados desta conta serão anulados no rendimento. Entradas manuais antigas não serão alteradas.", "Confirmar"))) return;
 
   await runAction(async () => {
-    const reference = tenantDocument(collections.receivables, receivableId);
+    const reference = tenantDocument(receivablesCollections.receivables, receivableId);
     if (!alreadyCancelled) {
       const before = await getDoc(reference);
-      const payments = await getDocs(query(tenantCollection(collections.payments), where("receivableId", "==", receivableId)));
+      const payments = await getDocs(query(tenantCollection(receivablesCollections.payments), where("receivableId", "==", receivableId)));
       if (payments.size > 400) throw Error("Esta conta exige cancelamento assistido devido ao número de pagamentos.");
       const movementIds = Array.from({length:5}, () => receivableEntryId(randomUuid()));
       await runTransaction(db, async transaction => {
@@ -3410,7 +3410,7 @@ async function cancelReceivable(receivableKey) {
     }
     if (deleteFromHistory) {
       const paymentSnapshot = await getDocs(query(
-        tenantCollection(collections.payments),
+        tenantCollection(receivablesCollections.payments),
         where("receivableId", "==", receivableId)
       ));
       if (paymentSnapshot.size > 498) {
