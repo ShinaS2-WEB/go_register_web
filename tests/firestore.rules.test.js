@@ -4,6 +4,7 @@
 const { readFileSync } = require("node:fs");
 const { initializeTestEnvironment, assertFails, assertSucceeds } = require("@firebase/rules-unit-testing");
 const test = require("node:test");
+const assert = require("node:assert/strict");
 
 let env;
 
@@ -102,6 +103,7 @@ test.before(async () => {
     projectId: "go-register-rules-test",
     firestore: { rules: readFileSync("firestore.rules", "utf8"), host: "127.0.0.1", port: 8080 }
   });
+  await env.clearFirestore();
   await env.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     const now = Date.now() - 1000;
@@ -212,24 +214,122 @@ test("conta com produtos integra pagamento ao rendimento e protege vínculo", as
   await assertFails(db.doc(`${base}/financial_entries/-12345`).update({isCancelled:true}));
   await assertFails(db.doc(`${base}/financial_entries/-12345`).delete());
   await assertFails(env.authenticatedContext('operator-b').firestore().doc(`${base}/financial_entries/-12345`).get());
-  const cancel = db.batch();
+  const admin = env.authenticatedContext("admin").firestore();
+  await assertFails(db.doc(`${base}/receivables/${account}`).update({status:"CANCELLED",stockReturned:true,updatedAt:Date.now(),updatedByUid:"operator"}));
+  await assertFails(admin.doc(`${base}/financial_entries/-12345`).update({amount:20}));
+  await assertFails(admin.doc(`${base}/financial_entries/-12345`).update({isCancelled:true}));
+  const cancel = admin.batch();
   items.forEach((item, index) => {
-    cancel.update(db.doc(`${base}/products/${item.productId}`), {stockQuantity:10});
-    cancel.set(db.doc(`${base}/stock_movements/${-200-index}`), {
+    cancel.update(admin.doc(`${base}/products/${item.productId}`), {stockQuantity:10});
+    cancel.set(admin.doc(`${base}/stock_movements/${-200-index}`), {
       id:-200-index, productId:item.productId, quantity:1, timestamp:now,
       type:'ENTRY', reason:`Devolução da conta ${account}`, empresa_id:'a'
     });
   });
-  cancel.update(db.doc(`${base}/receivables/${account}`),{status:'CANCELLED',stockReturned:true,updatedAt:Date.now(),updatedByUid:'operator'});
-  cancel.update(db.doc(`${base}/financial_entries/-12345`),{isCancelled:true});
+  cancel.update(admin.doc(`${base}/receivables/${account}`),{status:'CANCELLED',stockReturned:true,updatedAt:Date.now(),updatedByUid:'admin'});
+  cancel.update(admin.doc(`${base}/financial_entries/-12345`),{isCancelled:true});
   await assertSucceeds(cancel.commit()).catch(error => { throw Error(`cancelar: ${error.message}`); });
 });
 
-test("compatibilidade Spark: raiz ativa é pública, mas raiz inativa permanece privada", async () => {
-  await assertSucceeds(env.unauthenticatedContext().firestore().doc("companies/a").get());
+test("rate limit: clientes não podem ler ou zerar contadores privados", async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().doc("_rate_limits/private-counter").set({ timestamps: [Date.now()] });
+  });
+  for (const context of [env.unauthenticatedContext(), env.authenticatedContext("operator"), env.authenticatedContext("platform")]) {
+    const ref = context.firestore().doc("_rate_limits/private-counter");
+    await assertFails(ref.get());
+    await assertFails(ref.set({ timestamps: [] }));
+    await assertFails(ref.delete());
+  }
+});
+
+test("rate limit: transações reais compartilham a cota entre instâncias concorrentes", async () => {
+  const { createProtection } = require("../functions/src/protection");
+  class HttpsError extends Error {
+    constructor(code, message, details) { super(message); this.code = code; this.details = details; }
+  }
+  await env.withSecurityRulesDisabled(async (context) => {
+    let now = Date.now(), effects = 0;
+    const handlers = Array.from({ length: 2 }, () => createProtection({
+      onCall: (_options, handler) => handler, HttpsError,
+      getFirestore: () => context.firestore(), clock: () => now,
+    })("updateCompanyUserPassword", async () => {}, async () => ++effects));
+    const request = { auth: { uid: "quota-user" }, data: {} };
+    const results = await Promise.allSettled(Array.from({ length: 8 }, (_, index) => handlers[index % 2](request)));
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 5);
+    assert.equal(effects, 5);
+    for (const rejected of results.filter((result) => result.status === "rejected")) {
+      assert.equal(rejected.reason.code, "resource-exhausted");
+    }
+    now += 60000;
+    await handlers[0](request);
+    assert.equal(effects, 6);
+  });
+});
+
+test("segurança: ADMIN não promove, desativa nem apaga administradores", async () => {
+  const admin = env.authenticatedContext("admin").firestore();
+  const master = env.authenticatedContext("master").firestore();
+  await assertFails(admin.doc("companies/a/users/admin").update({ role: "MASTER_ADMIN" }));
+  await assertFails(admin.doc("companies/a/users/master").update({ isActive: false }));
+  await assertFails(admin.doc("companies/a/users/master").delete());
+  await assertFails(admin.doc("companies/a/users/forged-master").set({ role: "MASTER_ADMIN", isActive: true, empresa_id: "a" }));
+  await assertSucceeds(master.doc("companies/a/users/new-admin").set({ role: "ADMIN", isActive: true, empresa_id: "a" }));
+  await assertSucceeds(admin.doc("companies/a/users/new-operator").set({ role: "OPERATOR", isActive: true, empresa_id: "a" }));
+  await assertFails(admin.doc("companies/a/users/new-operator").update({ password: "secret" }));
+  await assertFails(admin.doc("companies/a/users/new-operator").update({ companyId: "b" }));
+});
+
+test("segurança: aliases respeitam empresa, conta de autenticação e hierarquia", async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await db.doc("companies/a/users/alias-operator").set({ role: "OPERATOR", isActive: true, authEmail: "operator@example.test" });
+    await db.doc("companies/a/users/alias-master").set({ role: "MASTER_ADMIN", isActive: true, authEmail: "master@example.test" });
+    await db.doc("login_aliases/b__victim").set({ empresa_id: "b", uid: "victim", authEmail: "victim@example.test" });
+    await db.doc("login_aliases/a__master").set({ empresa_id: "a", uid: "alias-master", authEmail: "master@example.test" });
+  });
+  const db = env.authenticatedContext("admin").firestore();
+  const alias = { empresa_id: "a", uid: "alias-operator", authEmail: "operator@example.test", email: "operator@example.test" };
+  await assertSucceeds(db.doc("login_aliases/a__operator").set(alias));
+  await assertSucceeds(db.doc("login_aliases/a__operator").update({ username: "Operador" }));
+  await assertFails(db.doc("login_aliases/b__victim").set(alias));
+  await assertFails(db.doc("login_aliases/b__new").set(alias));
+  await assertFails(db.doc("login_aliases/a__operator").update({ authEmail: "attacker@example.test", email: "attacker@example.test" }));
+  await assertFails(db.doc("login_aliases/a__master").set(alias));
+  await assertFails(db.doc("login_aliases/a__master").delete());
+});
+
+test("segurança: operador não altera catálogo, apaga vendas nem falsifica cargo na auditoria", async () => {
+  const db = env.authenticatedContext("operator").firestore();
+  await assertFails(db.doc("companies/a/products/p").update({ sellingPrice: 0.01 }));
+  await assertFails(db.doc("companies/a/products/p").update({ stockQuantity: -1 }));
+  await assertFails(db.doc("companies/a/products/p").update({ stockQuantity: "100" }));
+  await assertFails(db.doc("companies/a/products/injected").set({ name: "forged" }));
+  await assertFails(db.doc("companies/a/categories/injected").set({ name: "forged" }));
+  await assertFails(db.doc("companies/a/sales/s").delete());
+  await assertFails(db.doc("companies/a/audit_logs/spoof-role").set(
+    auditEventData("a", "spoof-role", "operator", Date.now(), { actorRole: "PLATFORM_ADMIN" })
+  ));
+});
+
+test("cadastro raiz exige autenticação e vínculo com a empresa", async () => {
+  await assertFails(env.unauthenticatedContext().firestore().doc("companies/a").get());
   await assertSucceeds(env.authenticatedContext("operator").firestore().doc("companies/a").get());
-  await assertSucceeds(env.authenticatedContext("operator").firestore().doc("companies/b").get());
+  await assertFails(env.authenticatedContext("operator").firestore().doc("companies/b").get());
   await assertFails(env.unauthenticatedContext().firestore().doc("companies/off").get());
+});
+
+test("login público expõe somente projeção mínima e não permite enumerar empresas", async () => {
+  const platform = env.authenticatedContext("platform").firestore();
+  const anonymous = env.unauthenticatedContext().firestore();
+  const payload = { companyId: "a", name: "Loja", logoUrl: "" };
+  await assertSucceeds(platform.doc("company_access/access-a").set(payload));
+  await assertSucceeds(anonymous.doc("company_access/access-a").get());
+  await assertFails(anonymous.collection("company_access").get());
+  await assertFails(anonymous.collection("companies").where("isActive", "==", true).get());
+  await assertFails(platform.doc("company_access/access-a").update({ taxIdentifier: "private" }));
+  await assertSucceeds(platform.doc("company_access/access-off").set({ ...payload, companyId: "off" }));
+  await assertFails(anonymous.doc("company_access/access-off").get());
 });
 
 test("compatibilidade Spark: operador grava venda e estoque, mas não administra perfil nem lê hash privado", async () => {
@@ -242,7 +342,7 @@ test("compatibilidade Spark: operador grava venda e estoque, mas não administra
 
 test("compatibilidade Spark: administrador atualiza usuários e estoque, mas audit_logs segue protegido", async () => {
   const db = env.authenticatedContext("admin").firestore();
-  await assertSucceeds(db.doc("companies/a/users/operator").update({ role: "MASTER_ADMIN" }));
+  await assertFails(db.doc("companies/a/users/operator").update({ role: "MASTER_ADMIN" }));
   await assertSucceeds(db.doc("companies/a/products/p").update({ stockQuantity: 3 }));
   await assertFails(db.doc("companies/a/audit_logs/fake").set({ action: "FORGED" }));
 });
@@ -344,7 +444,7 @@ test("dados de contas a receber ficam isolados por empresa", async () => {
   await assertFails(companyBDb.collection("companies/a/receivables").get());
 });
 
-test("operador cancela contas abertas ou pagas e apaga conta cancelada com pagamentos", async () => {
+test("administrador cancela contas abertas ou pagas e apaga conta cancelada com pagamentos", async () => {
   const createdAt = Date.now() - 1000;
   await env.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -374,35 +474,39 @@ test("operador cancela contas abertas ou pagas e apaga conta cancelada com pagam
     });
   });
 
-  const operatorDb = env.authenticatedContext("operator").firestore();
+  const adminDb = env.authenticatedContext("admin").firestore();
   const cancellationAt = Date.now();
-  await assertSucceeds(operatorDb.doc("companies/a/receivables/cancel-keep").update({
+  const deniedDb = env.authenticatedContext("operator").firestore();
+  await assertFails(deniedDb.doc("companies/a/receivables/cancel-keep").update({status:"CANCELLED",updatedAt:cancellationAt,updatedByUid:"operator"}));
+  await assertFails(deniedDb.doc("companies/a/settings/cancellation").get());
+  await assertFails(deniedDb.doc("companies/a/sales/s").update({isCancelled:true}));
+  await assertSucceeds(adminDb.doc("companies/a/receivables/cancel-keep").update({
     status: "CANCELLED",
     updatedAt: cancellationAt,
-    updatedByUid: "operator"
+    updatedByUid: "admin"
   }));
-  await assertFails(operatorDb.doc("companies/a/receivables/delete-unpaid").delete());
-  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-unpaid").update({
+  await assertFails(adminDb.doc("companies/a/receivables/delete-unpaid").delete());
+  await assertSucceeds(adminDb.doc("companies/a/receivables/delete-unpaid").update({
     status: "CANCELLED",
     updatedAt: cancellationAt,
-    updatedByUid: "operator"
+    updatedByUid: "admin"
   }));
-  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-unpaid").delete());
-  await assertSucceeds(operatorDb.doc("companies/a/receivables/delete-paid").update({
+  await assertSucceeds(adminDb.doc("companies/a/receivables/delete-unpaid").delete());
+  await assertSucceeds(adminDb.doc("companies/a/receivables/delete-paid").update({
     status: "CANCELLED",
     updatedAt: cancellationAt,
-    updatedByUid: "operator"
+    updatedByUid: "admin"
   }));
-  await assertFails(operatorDb.doc("companies/a/receivable_payments/payment-delete-paid").delete());
-  const deletePaidBatch = operatorDb.batch();
-  deletePaidBatch.delete(operatorDb.doc("companies/a/receivable_payments/payment-delete-paid"));
-  deletePaidBatch.delete(operatorDb.doc("companies/a/receivables/delete-paid"));
+  await assertFails(adminDb.doc("companies/a/receivable_payments/payment-delete-paid").delete());
+  const deletePaidBatch = adminDb.batch();
+  deletePaidBatch.delete(adminDb.doc("companies/a/receivable_payments/payment-delete-paid"));
+  deletePaidBatch.delete(adminDb.doc("companies/a/receivables/delete-paid"));
   await assertSucceeds(deletePaidBatch.commit());
-  await assertFails(operatorDb.doc("companies/a/receivables/cancel-invalid").update({
+  await assertFails(adminDb.doc("companies/a/receivables/cancel-invalid").update({
     status: "CANCELLED",
     description: "Alteração não permitida",
     updatedAt: cancellationAt,
-    updatedByUid: "operator"
+    updatedByUid: "admin"
   }));
   await assertFails(
     env.authenticatedContext("operator-b").firestore()

@@ -1,0 +1,10 @@
+{
+  "score": 2,
+  "summary": "Correções locais em autorização, privacidade, senhas e HTTP validadas por 113 testes. A integridade financeira ainda depende do cliente; implantação e migração não executadas. Auditoria online de dependências não autorizada pelo usuário.",
+  "findings": [
+    { "check": "Business Logic vs. Rules", "severity": "major", "issue": "Valores e estoque de vendas ainda podem ser escolhidos pelo cliente, sem transação autoritativa completa.", "recommendation": "Migrar operações do PDV para backend transacional com recálculo, idempotência e auditoria atômica." },
+    { "check": "Authority Source", "severity": "moderate", "issue": "Auditoria é enviada voluntariamente e senha de cancelamento não restringe administradores que usam a API diretamente.", "recommendation": "Executar e auditar cancelamentos exclusivamente no servidor se a senha deve restringir administradores." },
+    { "check": "PII exposure", "severity": "moderate", "issue": "Aliases antigos podem conter e-mails pessoais; cadastro raiz só ficará protegido após migração e deploy coordenados.", "recommendation": "Aplicar índice público mínimo, publicar regras e compatibilizar site/APK; migrar aliases antigos." },
+    { "check": "Storage Abuse and Type Safety", "severity": "minor", "issue": "Coleções operacionais legadas ainda não têm schemas completos e Hosting usa a raiz com exclusões.", "recommendation": "Validar integralmente schemas e publicar apenas um diretório gerado de arquivos permitidos." }
+  ]
+}

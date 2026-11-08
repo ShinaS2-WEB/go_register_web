@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rememberFocus, installKeyboardSupport } from '../keyboard.mjs';
+import { rememberFocus, installKeyboardSupport } from '../assets/js/keyboard.mjs';
 
 test('restaura campo e selecao depois que a tela e reconstruida', () => {
   const originalDocument = globalThis.document;

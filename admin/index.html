@@ -5,8 +5,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net https://identitytoolkit.googleapis.com https://securetoken.googleapis.com wss://*.firebaseio.com; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests" />
     <title>GO REGISTER · Empresas</title>
-    <link rel="stylesheet" href="../styles.css?v=site-ui-release-v3">
+    <link rel="stylesheet" href="../assets/css/styles.css?v=site-ui-release-v3">
     <link rel="stylesheet" href="./admin.css?v=admin-ui-release-v3">
     <link rel="stylesheet" href="./notifications.css?v=admin-toast-v1">
 </head>
@@ -16,12 +17,7 @@
         <main class="login-shell"><section class="login-card"><h1>Administração</h1><p class="muted">Carregando painel...</p></section></main>
     </div>
     <script type="module" src="./admin.js?v=site-ui-release-v3&amp;fix=company-access"></script>
-    <script>
-        window.addEventListener("error", function () {
-            const root = document.querySelector("#adminApp");
-            if (root && !root.querySelector("form")) root.innerHTML = '<main class="login-shell"><section class="login-card"><h1>Administração</h1><p class="error">Falha ao carregar o painel. Atualize a página com Ctrl+F5.</p></section></main>';
-        });
-    </script>
+    <script src="./load-error.js"></script>
 </body>
 
 </html>

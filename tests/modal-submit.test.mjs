@@ -7,7 +7,7 @@ import path from "node:path";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("modal preserva a referencia do formulario durante o salvamento assincrono", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function openModal(title, body, onSubmit)");
   const end = app.indexOf("function closeModal()", start);
   const modalSource = app.slice(start, end);

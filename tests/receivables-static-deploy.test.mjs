@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 test("pagina publica entrega o modulo e invalida caches antigos", async () => {
   const [index, app, workflow, firebaseJson, packageJson, firebaseWorkflow, localServer] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
-    readFile(path.join(root, "app.js"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
     readFile(path.join(root, ".github", "workflows", "pages.yml"), "utf8"),
     readFile(path.join(root, "firebase.json"), "utf8"),
     readFile(path.join(root, "package.json"), "utf8"),
@@ -22,8 +22,8 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
   assert.match(index, /connect-src[^;]+https:\/\/\*\.cloudfunctions\.net/);
   assert.match(app, /\.\/receivables-core\.mjs\?v=partial-payment-filter-v2/);
   assert.match(app, /\.\/stock-order-core\.mjs\?v=pos-availability-order-v1/);
-  assert.match(workflow, /cp index\.html app\.js receivables-core\.mjs styles\.css _site\//);
-  assert.match(workflow, /cp cash-register-core\.mjs stock-order-core\.mjs _site\//);
+  assert.match(workflow, /cp index\.html _site\//);
+  assert.match(workflow, /cp -R assets\/\. _site\/assets\//);
   assert.match(workflow, /cp admin\/index\.html admin\/admin\.js admin\/android-update-core\.mjs admin\/admin\.css admin\/notifications\.css _site\/admin\//);
   assert.doesNotMatch(workflow, /cp -R admin/);
   assert.match(workflow, /npm run test:receivables/);
@@ -40,7 +40,7 @@ test("pagina publica entrega o modulo e invalida caches antigos", async () => {
 });
 
 test("login usa o vinculo atual e traduz erros de autenticacao", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf('function renderUserLogin(error = "")');
   const end = app.indexOf("function isAllowedPassword", start);
   const loginSource = app.slice(start, end);
@@ -53,8 +53,8 @@ test("login usa o vinculo atual e traduz erros de autenticacao", async () => {
 
 test("tema branco preserva o classico e adapta a barra lateral", async () => {
   const [app, styles] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
-    readFile(path.join(root, "styles.css"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
+    readFile(path.join(root, "assets/css/styles.css"), "utf8"),
   ]);
 
   assert.match(app, /\["classic", "Clássico"\]/);
@@ -66,7 +66,7 @@ test("tema branco preserva o classico e adapta a barra lateral", async () => {
 });
 
 test("menu usa os icones corretos para vendas e caixa", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
 
   assert.match(app, /\["pos", "Vendas", "payments", "all"\]/);
   assert.match(app, /\["cash", "Caixa", "point_of_sale", "all"\]/);
@@ -74,8 +74,8 @@ test("menu usa os icones corretos para vendas e caixa", async () => {
 
 test("baixo estoque usa o mesmo limite de rolagem do extrato recente", async () => {
   const [app, styles] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
-    readFile(path.join(root, "styles.css"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
+    readFile(path.join(root, "assets/css/styles.css"), "utf8"),
   ]);
 
   assert.match(app, /transactions transactions-scroll transactions-scroll--low-stock/);
@@ -83,7 +83,7 @@ test("baixo estoque usa o mesmo limite de rolagem do extrato recente", async () 
 });
 
 test("login acompanha o tema sem faixa rigida nem autofill amarelo", async () => {
-  const styles = await readFile(path.join(root, "styles.css"), "utf8");
+  const styles = await readFile(path.join(root, "assets/css/styles.css"), "utf8");
 
   assert.match(styles, /\.login-shell\s*{[^}]*var\(--background\)/s);
   assert.doesNotMatch(styles, /\.login-shell\s*{[^}]*background:\s*#07152c/s);
@@ -96,8 +96,8 @@ test("login acompanha o tema sem faixa rigida nem autofill amarelo", async () =>
 
 test("fluxo de contas a receber nao exibe avisos explicativos redundantes", async () => {
   const [app, styles] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
-    readFile(path.join(root, "styles.css"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
+    readFile(path.join(root, "assets/css/styles.css"), "utf8"),
   ]);
   const start = app.indexOf("function renderReceivables()");
   const end = app.indexOf("function openProductModal", start);
@@ -112,8 +112,8 @@ test("fluxo de contas a receber nao exibe avisos explicativos redundantes", asyn
 
 test("nenhuma tela exibe caixas de aviso embutidas", async () => {
   const [app, styles, admin, adminStyles] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
-    readFile(path.join(root, "styles.css"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
+    readFile(path.join(root, "assets/css/styles.css"), "utf8"),
     readFile(path.join(root, "admin", "admin.js"), "utf8"),
     readFile(path.join(root, "admin", "admin.css"), "utf8"),
   ]);
@@ -125,7 +125,7 @@ test("nenhuma tela exibe caixas de aviso embutidas", async () => {
 });
 
 test("cada cliente possui acesso ao seu historico individual de pagamentos", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const historyStart = app.indexOf("function openReceivableCustomerPaymentHistory");
   const historyEnd = app.indexOf("function whatsappPhone", historyStart);
   const historySource = app.slice(historyStart, historyEnd);
@@ -137,7 +137,7 @@ test("cada cliente possui acesso ao seu historico individual de pagamentos", asy
 });
 
 test("clientes podem ser removidos sem apagar o historico", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("async function removeReceivableCustomer");
   const end = app.indexOf("function openReceivableModal", start);
   const removalSource = app.slice(start, end);
@@ -152,7 +152,7 @@ test("clientes podem ser removidos sem apagar o historico", async () => {
 });
 
 test("lancamento pode ser cancelado ou apagado sem depender do Blaze", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("async function cancelReceivable(receivableKey)");
   const end = app.indexOf("function openReceivablePaymentHistory", start);
   const cancellationSource = app.slice(start, end);
@@ -172,7 +172,7 @@ test("lancamento pode ser cancelado ou apagado sem depender do Blaze", async () 
 });
 
 test("todos os filtros agrupam as dividas por cliente em ordem alfabetica", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function renderReceivables()");
   const end = app.indexOf("function reportSales(bounds)", start);
   const pageSource = app.slice(start, end);
@@ -181,7 +181,7 @@ test("todos os filtros agrupam as dividas por cliente em ordem alfabetica", asyn
 });
 
 test("backup operacional inclui o modulo sem dados de cobranca do plano", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function exportBackupJson()");
   const end = app.indexOf("function dateStamp()", start);
   const backupSource = app.slice(start, end);
@@ -194,7 +194,7 @@ test("backup operacional inclui o modulo sem dados de cobranca do plano", async 
 });
 
 test("recebimento grava entrada financeira atomicamente sem duplicar venda", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function openReceivablePaymentModal");
   const end = app.indexOf("function openReceivablePaymentHistory", start);
   const paymentSource = app.slice(start, end);
@@ -211,7 +211,7 @@ test("recebimento grava entrada financeira atomicamente sem duplicar venda", asy
 });
 
 test("backup aguarda entitlement e snapshots completos", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function exportBackupJson()");
   const end = app.indexOf("function dateStamp()", start);
   const backupSource = app.slice(start, end);
@@ -225,7 +225,7 @@ test("backup aguarda entitlement e snapshots completos", async () => {
 });
 
 test("modal bloqueia fechamento enquanto o envio esta em andamento", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function openModal(");
   const end = app.indexOf("function openFormDialog", start);
   const modalSource = app.slice(start, end);
@@ -239,7 +239,7 @@ test("modal bloqueia fechamento enquanto o envio esta em andamento", async () =>
 });
 
 test("pagina de contas nao exibe o aviso permanente de controle manual", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function renderReceivables()");
   const end = app.indexOf("function reportSales", start);
   const receivablesPageSource = app.slice(start, end);

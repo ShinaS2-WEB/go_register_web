@@ -10,7 +10,7 @@ import {
   compareProductsByStockLevelAndName,
   productMatchesStockFilter,
   productStockLevel,
-} from "../stock-order-core.mjs";
+} from "../assets/js/stock-order-core.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -88,8 +88,8 @@ test("filtra produtos por cada nivel de estoque", () => {
 
 test("estoque geral e painel identificam visualmente cada nivel", async () => {
   const [app, styles] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
-    readFile(path.join(root, "styles.css"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
+    readFile(path.join(root, "assets/css/styles.css"), "utf8"),
   ]);
 
   assert.match(app, /label: "PRODUTO EM ESTOQUE"[\s\S]*badgeClass: "good"/);

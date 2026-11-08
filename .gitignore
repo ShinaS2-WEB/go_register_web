@@ -8,3 +8,7 @@ firebase-debug.log
 firestore-debug.log
 goregister-*-firebase-adminsdk-*.json
 arquivos_codex
+
+# Cache local e artefatos gerados
+.tmp/
+_site/

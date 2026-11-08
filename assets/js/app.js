@@ -1,3 +1,4 @@
+import { verifyCancellationHash } from "./password-core.mjs";
 import { installKeyboardSupport, rememberFocus } from "./keyboard.mjs";
 import { receiptSubtotalCents, receiptQrSvg } from "./receipt-core.mjs";
 import { validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel } from "./receivables-stock-core.mjs";
@@ -216,11 +217,6 @@ const transactionKindLabels = {
   exit: "Saida",
 };
 
-const defaultAdmin = {
-  username: "admin",
-  password: "admin",
-};
-
 const stockTypeLabels = {
   ENTRY: "Entrada",
   EXIT: "Saida",
@@ -435,20 +431,8 @@ async function sha256Hex(text) {
   return bufferToHex(await crypto.subtle.digest("SHA-256", encoded));
 }
 
-function isModernPasswordHash(value) {
-  return /^sha256\$[a-f0-9]{32,}\$[a-f0-9]{64}$/i.test(String(value || ""));
-}
-
-async function hashPassword(password, salt = randomToken()) {
-  const hash = await sha256Hex(`${salt}:${password}`);
-  return `sha256$${salt}$${hash}`;
-}
-
 async function verifyPassword(password, storedHash) {
-  const value = String(storedHash || "");
-  if (!isModernPasswordHash(value)) return value === String(password || "");
-  const [, salt, expectedHash] = value.split("$");
-  return await sha256Hex(`${salt}:${password}`) === expectedHash;
+  return verifyCancellationHash(password, storedHash);
 }
 
 function dateGroupKey(timestamp) {
@@ -688,7 +672,11 @@ function companyFromSnapshot(snapshot) {
 function cachedCompany() {
   try {
     const company = JSON.parse(localStorage.getItem("goRegisterCompany") || sessionStorage.getItem("goRegisterCompany") || "null");
-    if (company?.companyId) return { ...company, id: company.companyId };
+    if (company?.companyId) {
+      persistCompany(company);
+      const { companyId, name, logoUrl } = company;
+      return { id: companyId, companyId, name, logoUrl };
+    }
     if (company) {
       localStorage.removeItem("goRegisterCompany");
       sessionStorage.removeItem("goRegisterCompany");
@@ -701,7 +689,8 @@ function cachedCompany() {
   }
 }
 function persistCompany(company) {
-  localStorage.setItem("goRegisterCompany", JSON.stringify(company));
+  const { id, companyId, name, logoUrl } = company;
+  localStorage.setItem("goRegisterCompany", JSON.stringify({ id, companyId, name, logoUrl }));
   sessionStorage.removeItem("goRegisterCompany");
 }
 function tenantPayload(payload) {
@@ -913,7 +902,7 @@ function subscribe() {
   clearSubscriptions();
   if (state.authStage !== "user" || !tenantId()) return;
   Object.entries(collections).forEach(([key, name]) => {
-    if (key === "users" && !isPrivilegedRole(state.user?.role)) {
+    if ((key === "users" || key === "settings") && !isPrivilegedRole(state.user?.role)) {
       state.loadedCollections.add(key);
       return;
     }
@@ -1025,7 +1014,7 @@ function renderLoginBrand() {
   return `<img class="login-brand-logo" src="./assets/goregisterlogo.png" alt="GO REGISTER" />`;
 }
 
-function renderCompanyLogin(error = "") {
+function renderCompanyLogin(error = "", identifierValue = "") {
   root.innerHTML = `
     <main class="login-shell">
       <form class="login-card" id="companyLoginForm">
@@ -1034,7 +1023,7 @@ function renderCompanyLogin(error = "") {
         <p class="muted login-subtitle">Use o identificador de acesso para continuar</p>
         <label class="field">
           <span>Empresa</span>
-          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Identificador de acesso" required /></span>
+          <span class="input-wrap">${icon("domain")}<input name="identifier" autocomplete="organization" placeholder="Identificador de acesso" value="${escapeHtml(identifierValue)}" required /></span>
         </label>
         <p class="error">${escapeHtml(error)}</p>
         <button class="btn full" type="submit">Continuar</button>
@@ -1051,15 +1040,19 @@ function renderCompanyLogin(error = "") {
       const identifier = /^[\d\s./-]+$/.test(identifierInput)
         ? identifierInput.replace(/\D/g, "")
         : identifierInput.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-      const snapshot = await getDocs(query(collection(db, "companies"), where("identifierNormalized", "==", identifier), where("isActive", "==", true), limit(1)));
-      if (snapshot.empty) throw new Error("Empresa não encontrada ou desativada.");
-      const companyDoc = snapshot.docs[0];
-      state.company = companyFromSnapshot(companyDoc);
+      const access = await getDoc(doc(db, "company_access", await sha256Hex(identifier)));
+      if (!access.exists()) throw new Error("Empresa não encontrada ou desativada.");
+      state.company = { ...access.data(), id: access.data().companyId };
       state.authStage = "company";
       persistCompany(state.company);
       renderUserLogin();
     } catch (loginError) {
-      renderCompanyLogin(loginError.message || "Não foi possível autenticar a empresa.");
+      const message = loginError?.code === "permission-denied"
+        ? "Não foi possível verificar o acesso à empresa. Confira o identificador; se estiver correto, solicite ao administrador a verificação do cadastro de acesso e das permissões."
+        : loginError?.code === "unavailable"
+          ? "Não foi possível conectar ao serviço. Confira sua conexão e tente novamente."
+          : loginError.message || "Não foi possível autenticar a empresa.";
+      renderCompanyLogin(message, String(form.get("identifier") || ""));
     }
   });
 }
@@ -1126,7 +1119,7 @@ function userLoginErrorMessage(error) {
 }
 
 function isAllowedPassword(password) {
-  return String(password || "").length >= 6 || String(password || "") === defaultAdmin.password;
+  return String(password || "").length >= 6 && String(password || "").length <= 128;
 }
 
 function appSetting(id) {
@@ -1223,6 +1216,10 @@ async function verifyCancellationPassword(password) {
 }
 
 async function requestCancellationPassword() {
+  if (!isAdmin()) {
+    toast("Somente administradores podem autorizar cancelamentos. Entre com uma conta administrativa.");
+    return "";
+  }
   if (!cancellationPasswordHash()) {
     toast("Senha de cancelamento não configurada. Defina-a no site de administração.");
     return "";
@@ -3644,7 +3641,7 @@ function openUserModal(item = null) {
     }
     let authEmail = item?.authEmail || "";
     const password = String(form.get("password") || "");
-    if (!item && !isAllowedPassword(password)) throw new Error("Informe uma senha com pelo menos 6 caracteres, ou use a senha padrao admin.");
+    if (!item && !isAllowedPassword(password)) throw new Error("Informe uma senha com 6 a 128 caracteres.");
     let userDocId = item ? docKey(item, id) : "";
     if (!item) {
       const secondaryApp = initializeApp(firebaseConfig, `create-user-${Date.now()}`);

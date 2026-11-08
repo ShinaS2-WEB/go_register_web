@@ -14,7 +14,7 @@ import {
   receivablePaymentsForCustomer,
   receivablesEntitlementAccess,
   receivablesSummary,
-} from "../receivables-core.mjs";
+} from "../assets/js/receivables-core.mjs";
 
 test("gating diferencia modulo oculto, completo e historico", () => {
   const now = new Date(2026, 7, 20, 12).getTime();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel} from '../receivables-stock-core.mjs';
+import {validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel} from '../assets/js/receivables-stock-core.mjs';
 
 const item = {productId: 1, name: 'Cabo USB', quantity: 1.5, unitPriceCents: 1000};
 test('quantidades fracionadas geram valor em centavos e rejeitam entradas inválidas', () => {

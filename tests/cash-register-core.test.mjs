@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { calculateExpectedRegisterBalance } from "../cash-register-core.mjs";
+import { calculateExpectedRegisterBalance } from "../assets/js/cash-register-core.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -25,7 +25,7 @@ test("saldo esperado trata valores ausentes ou invalidos como zero", () => {
 
 test("relatorio do caixa usa os totais completos e publica o modulo de calculo", async () => {
   const [app, workflow] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
     readFile(path.join(root, ".github", "workflows", "pages.yml"), "utf8"),
   ]);
   const start = app.indexOf("function registerReport(register)");
@@ -34,5 +34,6 @@ test("relatorio do caixa usa os totais completos e publica o modulo de calculo",
 
   assert.match(reportSource, /calculateExpectedRegisterBalance\(\{[\s\S]*sales,[\s\S]*entries,[\s\S]*exits,/);
   assert.doesNotMatch(reportSource, /initialBalance[^;]+cashSales[^;]+cashEntries[^;]+cashExits/);
-  assert.match(workflow, /cash-register-core\.mjs/);
+  assert.match(workflow, /cp -R assets\/\. _site\/assets\//);
+  await readFile(path.join(root, "assets/js/cash-register-core.mjs"), "utf8");
 });

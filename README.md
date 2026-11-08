@@ -1,6 +1,24 @@
 # GO REGISTER Web
 
-Consulte [ATUALIZACAO_APK.md](ATUALIZACAO_APK.md) para publicar uma nova versão do
+## Estrutura do projeto
+
+O frontend principal fica em `assets/js/` e `assets/css/`, com entrada em
+`index.html`. O painel mestre continua em `admin/`; guias e relatórios ficam
+em `docs/`. Consulte [a análise da estrutura](docs/project-structure.md) para
+entender a função das pastas e os arquivos gerados que não devem ser versionados.
+
+Consulte [a auditoria de segurança e a ordem de implantação](docs/security-audit.md)
+antes de publicar as alterações de acesso. A migração de `company_access`, as
+regras e a atualização do site/APK devem ser coordenadas; há riscos financeiros
+remanescentes documentados no relatório.
+
+Veja também [os limites de requisições e sua cobertura](docs/rate-limit.md).
+As cotas das Cloud Functions não cobrem acessos diretos ao Firestore/Auth.
+
+O [tratamento dos alertas do GitGuard](docs/gitguard-remediation.md) registra as
+correções, os falsos positivos e as pendências de configuração da chave Firebase.
+
+Consulte [ATUALIZACAO_APK.md](docs/ATUALIZACAO_APK.md) para publicar uma nova versão do
 aplicativo com segurança pelo painel mestre.
 
 GO REGISTER Web e um sistema de ponto de venda e gestao comercial criado para pequenos negocios que precisam controlar vendas, caixa, estoque, usuarios e relatorios em uma interface simples e responsiva.
@@ -72,7 +90,7 @@ bloqueados.
 
 O módulo funciona no plano Spark: ele usa transações do Firestore e não depende
 de Cloud Functions. O recebimento reduz somente a dívida e não cria venda nem
-entrada de caixa automaticamente. Consulte `MODULO_CONTAS_RECEBER.md` para a
+entrada de caixa automaticamente. Consulte [guia de Contas a Receber](docs/MODULO_CONTAS_RECEBER.md) para a
 ordem de publicação e os testes obrigatórios.
 
 ## Primeiros Passos
@@ -84,6 +102,21 @@ publicar com Firebase CLI, autentique-se no projeto correto e use
 `firebase deploy --only firestore:rules,hosting`. O diretório `functions/` possui
 dependências próprias e só precisa de `npm install` dentro dele quando as Cloud
 Functions forem alteradas ou publicadas.
+
+## Testes locais
+
+Use Node.js 22 atualizado (mesma versão principal do CI e das Cloud Functions).
+Os emuladores do Firebase CLI 15 exigem Java 21 ou superior disponível no `PATH`.
+
+```powershell
+npm ci
+npm ci --prefix functions
+npm test
+npm run emulators:test
+```
+
+As duas instalações usam os lockfiles revisados. Consulte o relatório do GitGuard
+acima antes de remover os overrides de segurança de dependências transitivas.
 
 ## Status
 

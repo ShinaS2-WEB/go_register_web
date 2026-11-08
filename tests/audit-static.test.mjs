@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
+const source = await readFile(new URL("../assets/js/app.js", import.meta.url), "utf8");
 
 test("site oferece auditoria somente em rota administrativa", () => {
   assert.match(source, /\["audit", "Auditoria", "policy", "admin"\]/);

@@ -15,8 +15,8 @@ test("valida a senha moderna de cancelamento", () => {
   assert.equal(verifyCancellationPasswordHash("senha-errada", `sha256$${salt}$${hash}`), false);
 });
 
-test("mantem compatibilidade com senha legada e rejeita valor ausente", () => {
-  assert.equal(verifyCancellationPasswordHash("senha-legada", "senha-legada"), true);
+test("rejeita senhas armazenadas em texto puro e valores ausentes", () => {
+  assert.equal(verifyCancellationPasswordHash("senha-legada", "senha-legada"), false);
   assert.equal(verifyCancellationPasswordHash("outra", "senha-legada"), false);
   assert.equal(verifyCancellationPasswordHash("", ""), false);
 });

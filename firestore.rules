@@ -10,19 +10,33 @@ service cloud.firestore {
     }
     function activeCompany(companyId) {
       let company = get(/databases/$(database)/documents/companies/$(companyId)).data;
-      return company.isActive == true && company.get('dataDeletionInProgress', false) != true;
+      return company.isActive == true
+        && (!('dataDeletionInProgress' in company) || company.dataDeletionInProgress != true);
     }
     function companyProfile(companyId) {
       return get(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid)).data;
     }
     function companyUser(companyId) {
+      let profile = companyProfile(companyId);
       return signedIn()
         && activeCompany(companyId)
-        && exists(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid))
-        && (!('isActive' in companyProfile(companyId)) || companyProfile(companyId).isActive == true);
+        && (!('isActive' in profile) || profile.isActive == true)
+        && (!('empresa_id' in profile) || profile.empresa_id == companyId)
+        && (!('companyId' in profile) || profile.companyId == companyId);
     }
     function companyAdmin(companyId) {
       return companyUser(companyId) && companyProfile(companyId).role in ['ADMIN', 'MASTER_ADMIN'];
+    }
+    function canManageRole(companyId, role) {
+      return companyAdmin(companyId)
+        && (role == 'OPERATOR' || companyProfile(companyId).role == 'MASTER_ADMIN');
+    }
+    function validUser(data, companyId) {
+      return belongsToCompany(data, companyId)
+        && (!('companyId' in data) || data.companyId == companyId)
+        && data.role in ['OPERATOR', 'ADMIN', 'MASTER_ADMIN']
+        && data.isActive is bool
+        && !data.keys().hasAny(['password', 'passwordHash', 'sessionToken']);
     }
     function belongsToCompany(data, companyId) {
       return !('empresa_id' in data) || data.empresa_id == companyId;
@@ -161,6 +175,8 @@ service cloud.firestore {
         && data.actorName.size() <= 120
         && data.actorRole is string
         && data.actorRole in ['OPERATOR', 'ADMIN', 'MASTER_ADMIN', 'PLATFORM_ADMIN']
+        && ((platformAdmin() && data.actorRole == 'PLATFORM_ADMIN')
+          || (companyUser(companyId) && data.actorRole == companyProfile(companyId).role))
         && data.timestamp is int
         && data.timestamp >= request.time.toMillis() - 300000
         && data.timestamp <= request.time.toMillis() + 300000
@@ -537,8 +553,19 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /company_access/{accessId} {
+      allow get: if activeCompany(resource.data.companyId);
+      allow list: if platformAdmin();
+      allow create, update: if platformAdmin()
+        && request.resource.data.keys().hasOnly(['companyId', 'name', 'logoUrl'])
+        && boundedDocumentId(request.resource.data.companyId)
+        && request.resource.data.name is string && request.resource.data.name.size() <= 160
+        && request.resource.data.logoUrl is string && request.resource.data.logoUrl.size() <= 500;
+      allow delete: if platformAdmin();
+    }
+
     match /companies/{companyId} {
-      allow read: if resource.data.isActive == true || platformAdmin();
+      allow read: if platformAdmin() || companyUser(companyId);
       allow create, update, delete: if platformAdmin();
 
       match /users/{uid} {
@@ -546,16 +573,20 @@ service cloud.firestore {
           || (signedIn() && activeCompany(companyId) && request.auth.uid == uid)
           || (companyUser(companyId) && companyAdmin(companyId));
         allow create: if platformAdmin()
-          || (companyAdmin(companyId) && belongsToCompany(request.resource.data, companyId));
+          || (canManageRole(companyId, request.resource.data.role)
+            && validUser(request.resource.data, companyId));
         allow update: if platformAdmin() || (companyAdmin(companyId)
+          && canManageRole(companyId, resource.data.role)
+          && canManageRole(companyId, request.resource.data.role)
           && belongsToCompany(resource.data, companyId)
-          && belongsToCompany(request.resource.data, companyId));
+          && validUser(request.resource.data, companyId));
         allow delete: if platformAdmin() || (companyAdmin(companyId)
+          && canManageRole(companyId, resource.data.role)
           && request.auth.uid != uid && belongsToCompany(resource.data, companyId));
       }
 
       match /settings/{documentId} {
-        allow read: if platformAdmin() || companyUser(companyId);
+        allow read: if platformAdmin() || companyAdmin(companyId);
         allow create, update: if platformAdmin()
           || (documentId == restoreSessionId()
             && companyAdmin(companyId)
@@ -657,10 +688,12 @@ service cloud.firestore {
             && existsAfter(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)))
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
-            && ((request.resource.data.status == 'CANCELLED' && validReceivableCancellationUpdate())
-              || (request.resource.data.status != 'CANCELLED' && validReceivablePaymentUpdate(companyId, receivableId))));
+            && (request.resource.data.status == 'CANCELLED'
+              ? (companyProfile(companyId).role in ['ADMIN', 'MASTER_ADMIN']
+                && validReceivableCancellationUpdate())
+              : validReceivablePaymentUpdate(companyId, receivableId)));
         allow delete: if platformAdmin()
-          || (companyUser(companyId)
+          || (companyAdmin(companyId)
             && receivablesProvisioned(companyId)
             && deletableCancelledReceivable(resource.data, companyId, receivableId));
       }
@@ -680,7 +713,7 @@ service cloud.firestore {
             && validRestoredPayment(request.resource.data, companyId, paymentId)
             && existsAfter(receivablePath(companyId, request.resource.data.receivableId)));
         allow delete: if platformAdmin()
-          || (companyUser(companyId)
+          || (companyAdmin(companyId)
             && receivablesProvisioned(companyId)
             && deletablePaymentWithReceivable(resource.data, companyId, paymentId));
       }
@@ -696,17 +729,35 @@ service cloud.firestore {
         allow read: if collectionName in ['products', 'sales', 'categories', 'suppliers',
           'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
           && (platformAdmin() || companyUser(companyId));
-        allow create, update: if collectionName in ['products', 'sales', 'categories', 'suppliers',
+        allow create: if collectionName in ['products', 'sales', 'categories', 'suppliers',
           'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
           && (collectionName != 'stock_movements' || (!documentId.matches('rcv_.*') && !('receivableStockItem' in request.resource.data)) || validReceivableMovement(companyId, documentId))
           && (collectionName != 'financial_entries' || linkedIncomeWrite(companyId, documentId))
           && (platformAdmin() || (companyUser(companyId)
+            && (!(collectionName in ['products', 'categories', 'suppliers']) || companyAdmin(companyId))
             && belongsToCompany(request.resource.data, companyId)));
+        allow update: if collectionName in ['products', 'sales', 'categories', 'suppliers',
+          'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
+          && (collectionName != 'stock_movements' || (!documentId.matches('rcv_.*') && !('receivableStockItem' in request.resource.data)) || validReceivableMovement(companyId, documentId))
+          && (collectionName != 'financial_entries' || linkedIncomeWrite(companyId, documentId))
+          && (platformAdmin() || (companyUser(companyId)
+            && belongsToCompany(resource.data, companyId)
+            && belongsToCompany(request.resource.data, companyId)
+            && (!(collectionName in ['sales', 'financial_entries', 'financial_exits', 'stock_movements'])
+              || companyAdmin(companyId))
+            && (!(collectionName in ['products', 'categories', 'suppliers'])
+              || companyAdmin(companyId)
+              || (collectionName == 'products'
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stockQuantity'])
+                && request.resource.data.stockQuantity is number
+                && request.resource.data.stockQuantity >= 0
+                && request.resource.data.stockQuantity <= 999999999))));
         allow delete: if collectionName in ['products', 'sales', 'categories', 'suppliers',
           'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
           && (collectionName != 'stock_movements' || !documentId.matches('rcv_.*') || platformAdmin() || activeRestoreSession(companyId))
           && (collectionName != 'financial_entries' || !('receivablePaymentId' in resource.data) || platformAdmin() || activeRestoreSession(companyId))
           && (platformAdmin() || (companyUser(companyId)
+            && companyAdmin(companyId)
             && belongsToCompany(resource.data, companyId)));
       }
     }
@@ -714,10 +765,31 @@ service cloud.firestore {
     match /login_aliases/{aliasId} {
       allow get: if resource.data.empresa_id is string && activeCompany(resource.data.empresa_id);
       allow list: if false;
-      allow create, update: if platformAdmin() || (request.resource.data.empresa_id is string
-        && companyAdmin(request.resource.data.empresa_id));
+      function validAlias() {
+        let data = request.resource.data;
+        let user = getAfter(/databases/$(database)/documents/companies/$(data.empresa_id)/users/$(data.uid)).data;
+        return data.empresa_id is string
+          && data.keys().hasOnly(['empresa_id', 'companyId', 'uid', 'authEmail', 'email',
+            'username', 'createdAt', 'updatedAt', 'kind', 'syncedFromCompanyUsers'])
+          && boundedUid(data.uid)
+          && aliasId.size() <= 512
+          && aliasId.split('__')[0] == data.empresa_id
+          && data.authEmail is string && data.authEmail.size() <= 254
+          && data.email == data.authEmail
+          && user.authEmail == data.authEmail
+          && companyAdmin(data.empresa_id)
+          && canManageRole(data.empresa_id, user.role);
+      }
+      allow create: if platformAdmin() || validAlias();
+      allow update: if platformAdmin() || (validAlias()
+        && resource.data.empresa_id == request.resource.data.empresa_id
+        && companyAdmin(resource.data.empresa_id)
+        && canManageRole(resource.data.empresa_id,
+          get(/databases/$(database)/documents/companies/$(resource.data.empresa_id)/users/$(resource.data.uid)).data.role));
       allow delete: if platformAdmin() || (resource.data.empresa_id is string
-        && companyAdmin(resource.data.empresa_id));
+        && companyAdmin(resource.data.empresa_id)
+        && canManageRole(resource.data.empresa_id,
+          get(/databases/$(database)/documents/companies/$(resource.data.empresa_id)/users/$(resource.data.uid)).data.role));
     }
 
     match /{document=**} { allow read, write: if false; }

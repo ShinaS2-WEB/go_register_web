@@ -7,7 +7,7 @@ import path from "node:path";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("central de alertas reutiliza os dados reais no header", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const headerStart = app.indexOf("function renderView()");
   const headerEnd = app.indexOf("function renderTopActions", headerStart);
   const header = app.slice(headerStart, headerEnd);
@@ -21,8 +21,8 @@ test("central de alertas reutiliza os dados reais no header", async () => {
 
 test("popover e bottom sheet possuem fechamento e navegação acessíveis", async () => {
   const [app, styles] = await Promise.all([
-    readFile(path.join(root, "app.js"), "utf8"),
-    readFile(path.join(root, "styles.css"), "utf8"),
+    readFile(path.join(root, "assets/js/app.js"), "utf8"),
+    readFile(path.join(root, "assets/css/styles.css"), "utf8"),
   ]);
 
   assert.match(app, /role="dialog" aria-modal="true"/);
@@ -36,7 +36,7 @@ test("popover e bottom sheet possuem fechamento e navegação acessíveis", asyn
 });
 
 test("dashboard não mantém o antigo bloco grande de alertas", async () => {
-  const app = await readFile(path.join(root, "app.js"), "utf8");
+  const app = await readFile(path.join(root, "assets/js/app.js"), "utf8");
   const start = app.indexOf("function renderDashboard()");
   const end = app.indexOf("function renderTransactionRow", start);
   const dashboard = app.slice(start, end);

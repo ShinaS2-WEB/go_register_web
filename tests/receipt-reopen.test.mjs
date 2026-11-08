@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 test('reabre venda salva preservando valores, pagamentos e produto removido', async () => {
-  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../assets/js/app.js', import.meta.url), 'utf8');
   const handlers = {};
   const root = {
     innerHTML: '',

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { receiptSubtotalCents, receiptQrPayload, receiptQrSvg } from "../receipt-core.mjs";
+import { receiptSubtotalCents, receiptQrPayload, receiptQrSvg } from "../assets/js/receipt-core.mjs";
 
 test("subtotal usa valor salvo e recupera vendas antigas sem subtotal", () => {
   assert.equal(receiptSubtotalCents({ totalAmount: 200, finalAmount: 178.6, discount: 21.4 }), 20000);
@@ -20,7 +20,7 @@ test("QR identifica venda e cancelamento sem incluir dados pessoais", () => {
 });
 
 test("recibo e compartilhamento usam pagamentos, subtotal, desconto e total nessa ordem", async () => {
-  const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  const source = await readFile(new URL("../assets/js/app.js", import.meta.url), "utf8");
   const root = { innerHTML: "", querySelector: selector => selector === ".receipt-logo" ? null : { addEventListener() {} }, querySelectorAll: () => [] };
   const result = { sale: { id: 123, timestamp: 1000, totalAmount: 200, discount: 21.4, finalAmount: 178.6 }, receiptItems: [{ name: "Produto <teste>", quantity: 20, unitPriceCents: 1000, subtotalCents: 20000 }], payments: [{ method: "CASH", amountCents: 12330 }, { method: "DEBIT_CARD", amountCents: 5530 }] };
   const context = vm.createContext({
