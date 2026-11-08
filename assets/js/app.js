@@ -3207,6 +3207,7 @@ ${select("stockProduct", "Produto (opcional)", [["", "Selecionar produto"], ...s
 }
 
 function openReceivablePaymentModal(receivableKey) {
+  if (!currentOpenRegister()) return toast("Abra o caixa para registrar o pagamento. O lançamento de fiado continua disponível.");
   const receivable = findReceivable(receivableKey);
   const access = accountsReceivableAccess();
   if (!access.canCollect) return toast("O modulo nao permite registrar pagamentos neste momento.");
@@ -3297,11 +3298,15 @@ function openReceivablePaymentModal(receivableKey) {
         const existingEntry = await transaction.get(entryRef);
         if (existingEntry.exists()) throw Error("Identificador financeiro já utilizado.");
         const register = await transaction.get(tenantDocument(collections.registers, ACTIVE_REGISTER_DOCUMENT));
+        const registerId = register.exists() ? Number(register.data().id) : 0;
+        if (!register.exists() || register.data().isOpen !== true || !Number.isSafeInteger(registerId) || registerId <= 0) {
+          throw Error("Caixa fechado. Abra o caixa para registrar o pagamento.");
+        }
         transaction.set(entryRef, tenantPayload({
           id: financialEntryId, timestamp, amount: amountCents / 100,
           description: receivablePaymentDescription(serverReceivable, amountCents),
           category: `RECEIVABLE_PAYMENT:${paymentId}`, paymentMethod: paymentMethod === "CREDIT_CARD" ? "CREDIT_CREDIT" : paymentMethod,
-          cashRegisterId: register.exists() && register.data().isOpen === true ? Number(register.data().id) || 0 : 0,
+          cashRegisterId: registerId,
           isCancelled: false, receivableId, receivablePaymentId: paymentId
         }));
         transaction.set(paymentReference, tenantPayload({

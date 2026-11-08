@@ -108,6 +108,9 @@ test.before(async () => {
     const db = context.firestore();
     const now = Date.now() - 1000;
     await db.doc("companies/a").set({ isActive: true });
+    for (const companyId of ['a', 'b', 'c', 'd']) {
+      await db.doc(`companies/${companyId}/cash_registers/active_register`).set({id:1,isOpen:true});
+    }
     await db.doc("companies/b").set({ isActive: true });
     await db.doc("companies/c").set({ isActive: true });
     await db.doc("companies/d").set({ isActive: true });
@@ -175,6 +178,11 @@ test("conta com produtos integra pagamento ao rendimento e protege vínculo", as
   const db = env.authenticatedContext("operator").firestore(), now = Date.now();
   const base = 'companies/a';
   const customer = 'stock-customer', account = 'stock-account', payment = 'stock-payment';
+  const setRegister = async value => env.withSecurityRulesDisabled(async context => {
+    const ref = context.firestore().doc(`${base}/cash_registers/active_register`);
+    if (value === null) await ref.delete(); else await ref.set(value);
+  });
+  await setRegister({id:1,isOpen:false});
   await env.withSecurityRulesDisabled(async context => {
     await context.firestore().doc(`${base}/customers/${customer}`).set(customerData('a', customer, 'operator', now));
   });
@@ -199,12 +207,27 @@ test("conta com produtos integra pagamento ao rendimento e protege vínculo", as
   const paymentData = {id:payment,receivableId:account,customerId:customer,amountCents:1000,paymentMethod:'PIX',timestamp:now,
     notes:'',createdByUid:'operator',empresa_id:'a',companyId:'a',financialEntryId:-12345};
   const entry = {id:-12345,timestamp:now,amount:10,description:'JOSE PAGOU R$ 10,00 — Cabo USB',category:`RECEIVABLE_PAYMENT:${payment}`,
-    paymentMethod:'PIX',cashRegisterId:0,isCancelled:false,empresa_id:'a',receivableId:account,receivablePaymentId:payment};
+    paymentMethod:'PIX',cashRegisterId:1,isCancelled:false,empresa_id:'a',receivableId:account,receivablePaymentId:payment};
   const accountUpdate = {outstandingAmountCents:2300,status:'PARTIAL',lastPaymentId:payment,lastPaymentAt:now,updatedAt:now,updatedByUid:'operator'};
   const incomplete = db.batch();
   incomplete.set(db.doc(`${base}/receivable_payments/${payment}`),paymentData);
   incomplete.update(db.doc(`${base}/receivables/${account}`),accountUpdate);
   await assertFails(incomplete.commit());
+  const attempt = (cashRegisterId = 1, legacy = false) => {
+    const batch = db.batch();
+    const payload = {...paymentData};
+    if (legacy) delete payload.financialEntryId;
+    batch.set(db.doc(`${base}/receivable_payments/${payment}`),payload);
+    if (!legacy) batch.set(db.doc(`${base}/financial_entries/-12345`),{...entry,cashRegisterId});
+    batch.update(db.doc(`${base}/receivables/${account}`),accountUpdate);
+    return batch.commit();
+  };
+  await assertFails(attempt()); // Caixa fechado.
+  await assertFails(attempt(1, true)); // Cliente antigo não contorna o bloqueio.
+  await setRegister(null);
+  await assertFails(attempt()); // Caixa inexistente.
+  await setRegister({id:1,isOpen:true});
+  await assertFails(attempt(2)); // Entrada não pode apontar para outro caixa.
   const batch = db.batch();
   batch.set(db.doc(`${base}/receivable_payments/${payment}`),paymentData);
   batch.set(db.doc(`${base}/financial_entries/-12345`),entry);
@@ -219,6 +242,7 @@ test("conta com produtos integra pagamento ao rendimento e protege vínculo", as
   await assertFails(admin.doc(`${base}/financial_entries/-12345`).update({amount:20}));
   await assertFails(admin.doc(`${base}/financial_entries/-12345`).update({isCancelled:true}));
   const cancel = admin.batch();
+  await setRegister({id:1,isOpen:false}); // Cancelar permanece permitido com caixa fechado.
   items.forEach((item, index) => {
     cancel.update(admin.doc(`${base}/products/${item.productId}`), {stockQuantity:10});
     cancel.set(admin.doc(`${base}/stock_movements/${-200-index}`), {
@@ -229,6 +253,7 @@ test("conta com produtos integra pagamento ao rendimento e protege vínculo", as
   cancel.update(admin.doc(`${base}/receivables/${account}`),{status:'CANCELLED',stockReturned:true,updatedAt:Date.now(),updatedByUid:'admin'});
   cancel.update(admin.doc(`${base}/financial_entries/-12345`),{isCancelled:true});
   await assertSucceeds(cancel.commit()).catch(error => { throw Error(`cancelar: ${error.message}`); });
+  await setRegister({id:1,isOpen:true});
 });
 
 test("rate limit: clientes não podem ler ou zerar contadores privados", async () => {

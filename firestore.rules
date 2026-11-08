@@ -389,6 +389,11 @@ service cloud.firestore {
         && data.cashRegisterId is int && data.cashRegisterId >= 0
         && data.isCancelled is bool;
     }
+    // Novos recebimentos exigem caixa aberto; cancelamento e restauração não dependem dele.
+    function receivableRegisterOpen(companyId) {
+      let register = getAfter(/databases/$(database)/documents/companies/$(companyId)/cash_registers/active_register).data;
+      return register.isOpen == true && register.id is int && register.id > 0;
+    }
     function linkedIncomeWrite(companyId, documentId) {
       let path = /databases/$(database)/documents/companies/$(companyId)/financial_entries/$(documentId);
       let linkedBefore = exists(path) && ('receivablePaymentId' in resource.data);
@@ -398,6 +403,8 @@ service cloud.firestore {
         || (linkedAfter && validLinkedIncome(data, companyId, documentId)
           && (activeRestoreSession(companyId)
             || (!exists(path) && !data.isCancelled
+              && receivableRegisterOpen(companyId)
+              && data.cashRegisterId == getAfter(/databases/$(database)/documents/companies/$(companyId)/cash_registers/active_register).data.id
               && !exists(paymentPath(companyId, data.receivablePaymentId))
               && getAfter(paymentPath(companyId, data.receivablePaymentId)).data.financialEntryId == data.id
               && getAfter(paymentPath(companyId, data.receivablePaymentId)).data.amountCents / 100.0 == data.amount
@@ -505,6 +512,7 @@ service cloud.firestore {
       let before = get(linkedReceivable).data;
       let after = getAfter(linkedReceivable).data;
       return validPayment(payment, companyId, paymentId)
+        && receivableRegisterOpen(companyId)
         && (!('financialEntryId' in payment) || validPaymentEntryLink(companyId, paymentId, payment))
         && exists(linkedReceivable)
         && existsAfter(linkedReceivable)
