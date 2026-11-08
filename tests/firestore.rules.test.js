@@ -171,6 +171,66 @@ test.before(async () => {
 });
 test.after(async () => env?.cleanup());
 
+test("conta com produtos integra pagamento ao rendimento e protege vínculo", async () => {
+  const db = env.authenticatedContext("operator").firestore(), now = Date.now();
+  const base = 'companies/a';
+  const customer = 'stock-customer', account = 'stock-account', payment = 'stock-payment';
+  await env.withSecurityRulesDisabled(async context => {
+    await context.firestore().doc(`${base}/customers/${customer}`).set(customerData('a', customer, 'operator', now));
+  });
+  const items = Array.from({length:5}, (_, index) => ({productId:index + 1,name:`Cabo USB ${index}`,quantity:1,unitPriceCents:660}));
+  const debt = {...receivableData('a', account, customer, 'operator', now),stockItems:items,stockReturned:false};
+  await env.withSecurityRulesDisabled(async context => {
+    for (const item of items) await context.firestore().doc(`${base}/products/${item.productId}`).set({stockQuantity:10,empresa_id:'a'});
+  });
+  await assertFails(db.doc(`${base}/receivables/${account}`).set(debt));
+  const creation = db.batch();
+  creation.set(db.doc(`${base}/receivables/${account}`), debt);
+  items.forEach((item,index) => {
+    creation.update(db.doc(`${base}/products/${item.productId}`),{stockQuantity:9});
+    creation.set(db.doc(`${base}/stock_movements/rcv_${account}_${index}`),{
+      id: -100-index,productId:item.productId,quantity:-1,timestamp:now,type:'EXIT',reason:'Fiado',empresa_id:'a',
+      receivableId:account,receivableItemIndex:index,receivableStockItem:item
+    });
+  });
+  await assertSucceeds(creation.commit()).catch(error => { throw Error(`criar conta: ${error.message.replaceAll('\n',' ')}`); });
+  await assertFails(db.doc(`${base}/receivables/${account}`).update({stockItems:[{...items[0],quantity:-1}]}));
+  await assertFails(db.doc(`${base}/receivables/${account}`).update({stockItems:[{...items[0],name:'Alterado'}]}));
+  const paymentData = {id:payment,receivableId:account,customerId:customer,amountCents:1000,paymentMethod:'PIX',timestamp:now,
+    notes:'',createdByUid:'operator',empresa_id:'a',companyId:'a',financialEntryId:-12345};
+  const entry = {id:-12345,timestamp:now,amount:10,description:'JOSE PAGOU R$ 10,00 — Cabo USB',category:`RECEIVABLE_PAYMENT:${payment}`,
+    paymentMethod:'PIX',cashRegisterId:0,isCancelled:false,empresa_id:'a',receivableId:account,receivablePaymentId:payment};
+  const accountUpdate = {outstandingAmountCents:2300,status:'PARTIAL',lastPaymentId:payment,lastPaymentAt:now,updatedAt:now,updatedByUid:'operator'};
+  const incomplete = db.batch();
+  incomplete.set(db.doc(`${base}/receivable_payments/${payment}`),paymentData);
+  incomplete.update(db.doc(`${base}/receivables/${account}`),accountUpdate);
+  await assertFails(incomplete.commit());
+  const batch = db.batch();
+  batch.set(db.doc(`${base}/receivable_payments/${payment}`),paymentData);
+  batch.set(db.doc(`${base}/financial_entries/-12345`),entry);
+  batch.update(db.doc(`${base}/receivables/${account}`),accountUpdate);
+  await assertSucceeds(batch.commit()).catch(error => { throw Error(`integrar pagamento: ${error.message}`); });
+  await assertFails(db.doc(`${base}/financial_entries/-12345`).update({amount:20}));
+  await assertFails(db.doc(`${base}/financial_entries/-12345`).update({isCancelled:true}));
+  await assertFails(db.doc(`${base}/financial_entries/-12345`).delete());
+  await assertFails(env.authenticatedContext('operator-b').firestore().doc(`${base}/financial_entries/-12345`).get());
+  const admin = env.authenticatedContext("admin").firestore();
+  await assertFails(db.doc(`${base}/receivables/${account}`).update({status:"CANCELLED",stockReturned:true,updatedAt:Date.now(),updatedByUid:"operator"}));
+  await assertFails(admin.doc(`${base}/financial_entries/-12345`).update({amount:20}));
+  await assertFails(admin.doc(`${base}/financial_entries/-12345`).update({isCancelled:true}));
+  const cancel = admin.batch();
+  items.forEach((item, index) => {
+    cancel.update(admin.doc(`${base}/products/${item.productId}`), {stockQuantity:10});
+    cancel.set(admin.doc(`${base}/stock_movements/${-200-index}`), {
+      id:-200-index, productId:item.productId, quantity:1, timestamp:now,
+      type:'ENTRY', reason:`Devolução da conta ${account}`, empresa_id:'a'
+    });
+  });
+  cancel.update(admin.doc(`${base}/receivables/${account}`),{status:'CANCELLED',stockReturned:true,updatedAt:Date.now(),updatedByUid:'admin'});
+  cancel.update(admin.doc(`${base}/financial_entries/-12345`),{isCancelled:true});
+  await assertSucceeds(cancel.commit()).catch(error => { throw Error(`cancelar: ${error.message}`); });
+});
+
 test("rate limit: clientes não podem ler ou zerar contadores privados", async () => {
   await env.withSecurityRulesDisabled(async (context) => {
     await context.firestore().doc("_rate_limits/private-counter").set({ timestamps: [Date.now()] });

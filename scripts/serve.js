@@ -17,7 +17,7 @@ const types = {
 const publicFiles = new Set([
   "index.html", "assets/js/app.js", "assets/css/styles.css", "assets/css/receipt-layout.css",
   "assets/js/receipt-core.mjs", "assets/js/keyboard.mjs", "assets/js/receivables-core.mjs", "assets/js/password-core.mjs",
-  "assets/js/cash-register-core.mjs", "assets/js/stock-order-core.mjs", "assets/js/alerts-core.mjs",
+  "assets/js/cash-register-core.mjs", "assets/js/stock-order-core.mjs", "assets/js/receivables-stock-core.mjs", "assets/js/alerts-core.mjs",
   "assets/js/business-analytics-core.mjs", "admin/index.html", "admin/admin.js",
   "admin/load-error.js", "admin/android-update-core.mjs", "admin/admin.css", "admin/notifications.css",
 ]);
