@@ -1580,6 +1580,24 @@ body.dark .product-row.out {
   overflow-wrap: anywhere;
 }
 
+.transaction-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.transaction-detail {
+  margin-top: 4px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.transaction-content > .muted {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
 .transaction-row--cancelled .transaction-title,
 .transaction-row--cancelled .amount {
   text-decoration: line-through;
