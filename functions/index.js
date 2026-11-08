@@ -2,24 +2,26 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
-const { createHash, randomBytes } = require("node:crypto");
-const { verifyCancellationPasswordHash } = require("./src/cancellation");
+const { verifyCancellationPasswordHash, createCancellationPasswordHash } = require("./src/cancellation");
+const { validDocumentId, activeProfile } = require("./src/validation");
+const { createProtection } = require("./src/protection");
 
 initializeApp();
+const protectedCall = createProtection({ onCall, HttpsError, getFirestore });
 
 const tenantCollections = ["products", "sales", "categories", "suppliers", "cash_registers", "financial_entries", "financial_exits", "stock_movements", "settings"];
 
 async function requirePlatformAdministrator(request) {
   if (!request.auth) throw new HttpsError("unauthenticated", "Faça login como administrador da plataforma.");
   const administratorSnapshot = await getFirestore().doc(`platform_admins/${request.auth.uid}`).get();
-  if (!administratorSnapshot.exists || administratorSnapshot.data().isActive === false) {
+  if (!administratorSnapshot.exists || !activeProfile(administratorSnapshot.data())) {
     throw new HttpsError("permission-denied", "Esta conta não possui autorização administrativa.");
   }
 }
 
 async function requireCompany(companyId) {
   const cleanCompanyId = String(companyId || "").trim();
-  if (!cleanCompanyId) throw new HttpsError("invalid-argument", "Empresa inválida.");
+  if (!validDocumentId(cleanCompanyId)) throw new HttpsError("invalid-argument", "Empresa inválida.");
   const companySnapshot = await getFirestore().doc(`companies/${cleanCompanyId}`).get();
   if (!companySnapshot.exists) throw new HttpsError("not-found", "Empresa não encontrada.");
   return cleanCompanyId;
@@ -37,31 +39,32 @@ async function requireActiveCompanyUser(request, companyId) {
   const user = userSnapshot.data() || {};
   const belongsToCompany = (!user.companyId || user.companyId === cleanCompanyId)
     && (!user.empresa_id || user.empresa_id === cleanCompanyId);
-  if (company.isActive !== true || company.dataDeletionInProgress === true || !userSnapshot.exists || user.isActive === false || !belongsToCompany) {
+  if (company.isActive !== true || company.dataDeletionInProgress === true || !userSnapshot.exists || !activeProfile(user) || !belongsToCompany) {
     throw new HttpsError("permission-denied", "Usuário ou empresa sem autorização.");
   }
   return cleanCompanyId;
 }
 
-exports.updateCompanyUserPassword = onCall({ region: "southamerica-east1" }, async (request) => {
-  await requirePlatformAdministrator(request);
+exports.updateCompanyUserPassword = protectedCall("updateCompanyUserPassword", requirePlatformAdministrator, async (request) => {
   const database = getFirestore();
   const uid = String(request.data?.uid || "").trim();
   const password = String(request.data?.password || "");
-  if (!uid) throw new HttpsError("invalid-argument", "Usuário inválido.");
+  if (!validDocumentId(uid)) throw new HttpsError("invalid-argument", "Usuário inválido.");
   if (password.length < 6 || password.length > 128) {
     throw new HttpsError("invalid-argument", "A senha deve ter entre 6 e 128 caracteres.");
   }
 
   const companyId = String(request.data?.companyId || "").trim();
-  if (!companyId) throw new HttpsError("invalid-argument", "Empresa inválida.");
+  if (!validDocumentId(companyId)) throw new HttpsError("invalid-argument", "Empresa inválida.");
   const userReference = database.doc(`companies/${companyId}/users/${uid}`);
   const userSnapshot = await userReference.get();
-  if (!userSnapshot.exists || !userSnapshot.data().empresa_id) {
+  if (!userSnapshot.exists || userSnapshot.data().empresa_id !== companyId
+      || (userSnapshot.data().companyId && userSnapshot.data().companyId !== companyId)) {
     throw new HttpsError("not-found", "Usuário de empresa não encontrado.");
   }
 
   await getAuth().updateUser(uid, { password });
+  await getAuth().revokeRefreshTokens(uid);
   await userReference.update({
     passwordUpdatedAt: FieldValue.serverTimestamp(),
     passwordUpdatedBy: request.auth.uid,
@@ -71,22 +74,28 @@ exports.updateCompanyUserPassword = onCall({ region: "southamerica-east1" }, asy
   return { success: true };
 });
 
-exports.resetCompanyCancellationPassword = onCall({ region: "southamerica-east1" }, async (request) => {
-  await requirePlatformAdministrator(request);
+exports.resetCompanyCancellationPassword = protectedCall("resetCompanyCancellationPassword", requirePlatformAdministrator, async (request) => {
   const companyId = await requireCompany(request.data?.companyId);
   const password = String(request.data?.password || "");
   if (password.length < 6 || password.length > 128) throw new HttpsError("invalid-argument", "A senha deve ter entre 6 e 128 caracteres.");
-  const salt = randomBytes(24).toString("hex");
-  const hash = createHash("sha256").update(`${salt}:${password}`).digest("hex");
-  await getFirestore().doc(`companies/${companyId}/settings/cancellation`).set({id:"cancellation",empresa_id:companyId,passwordHash:`sha256$${salt}$${hash}`,updatedAt:Date.now(),updatedByPlatformAdmin:request.auth.uid},{merge:true});
+  const passwordHash = createCancellationPasswordHash(password);
+  await getFirestore().doc(`companies/${companyId}/settings/cancellation`).set({id:"cancellation",empresa_id:companyId,passwordHash,updatedAt:Date.now(),updatedByPlatformAdmin:request.auth.uid},{merge:true});
   return { success: true };
 });
 
-exports.cancelReceivable = onCall({ region: "southamerica-east1" }, async (request) => {
+async function requireCancellationAdministrator(request) {
   const companyId = await requireActiveCompanyUser(request, request.data?.companyId);
+  const profile = await getFirestore().doc(`companies/${companyId}/users/${request.auth.uid}`).get();
+  if (!["ADMIN", "MASTER_ADMIN"].includes(profile.data()?.role)) {
+    throw new HttpsError("permission-denied", "Somente administradores podem cancelar lançamentos.");
+  }
+  return companyId;
+}
+
+exports.cancelReceivable = protectedCall("cancelReceivable", requireCancellationAdministrator, async (request, companyId) => {
   const receivableId = String(request.data?.receivableId || "").trim();
   const password = String(request.data?.password || "");
-  if (!receivableId || receivableId.length > 64) throw new HttpsError("invalid-argument", "Lançamento inválido.");
+  if (!validDocumentId(receivableId, 64)) throw new HttpsError("invalid-argument", "Lançamento inválido.");
   if (!password || password.length > 128) throw new HttpsError("invalid-argument", "Senha de cancelamento inválida.");
 
   const database = getFirestore();
@@ -118,8 +127,7 @@ exports.cancelReceivable = onCall({ region: "southamerica-east1" }, async (reque
   });
 });
 
-exports.clearCompanyData = onCall({ region: "southamerica-east1", timeoutSeconds: 540 }, async (request) => {
-  await requirePlatformAdministrator(request);
+exports.clearCompanyData = protectedCall("clearCompanyData", requirePlatformAdministrator, async (request) => {
   const companyId = await requireCompany(request.data?.companyId);
   if (request.data?.confirmation !== companyId) throw new HttpsError("invalid-argument", "Confirmação de exclusão inválida.");
   const database = getFirestore();

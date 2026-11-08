@@ -1,0 +1,343 @@
+{
+  "generatedAtUtc": "2026-10-11 13:31:19 UTC",
+  "source": "npm audit consultado online com --offline=false; auditoria offline não foi usada como evidência.",
+  "scopeNote": "A raiz só declara devDependencies. O resultado zero de rootProduction não inclui as ferramentas de desenvolvimento e não representa uma auditoria do JavaScript entregue ao navegador.",
+  "remediation": {
+    "qs": "6.16.0 em ambos os lockfiles",
+    "uuid": "11.1.1 nos dependentes CommonJS vulneráveis; universal-analytics conserva sua versão 14.0.3 corrigida",
+    "firebaseTools": "15.33.0; remove a cadeia tar@6 e passa a exigir Java 21 para emuladores",
+    "cloudFunctions": "Nenhum major do SDK de produção foi alterado",
+    "residual": "14 pacotes de desenvolvimento sinalizados (12 altos e 2 médios); nenhum crítico. Inclui metadados propagados pela cadeia de dependências, não 14 vulnerabilidades independentes."
+  },
+  "reportCveSources": [
+    {
+      "cve": "CVE-2026-82562",
+      "package": "qs",
+      "fixedVersion": "6.16.0",
+      "url": "https://github.com/ljharb/qs/security/advisories/GHSA-x5fp-wj9c-mxmx"
+    },
+    {
+      "cve": "CVE-2026-82417",
+      "package": "qs",
+      "fixedVersion": "6.16.0",
+      "url": "https://github.com/ljharb/qs/security/advisories/GHSA-4mjr-xmp4-gh2g"
+    },
+    {
+      "cve": "CVE-2026-41907",
+      "package": "uuid",
+      "fixedVersion": "11.1.1",
+      "url": "https://github.com/uuidjs/uuid/security/advisories/GHSA-w5hq-g745-h8pq"
+    }
+  ],
+  "scopes": {
+    "root": {
+      "scope": "Todas as dependências da raiz, usadas como ferramentas de desenvolvimento.",
+      "command": "npm audit --json --offline=false",
+      "counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 2,
+        "high": 12,
+        "critical": 0,
+        "total": 14
+      },
+      "packages": [
+        {
+          "name": "@firebase/firestore",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            "@grpc/grpc-js"
+          ],
+          "effects": [
+            "@firebase/firestore-compat",
+            "firebase"
+          ],
+          "range": "1.3.1-0 - 1.3.1-canary.df1b588 || 1.3.2-0 - 1.3.3-canary.bc4a844 || 1.13.1-0 - 1.13.1-canary.ce3addba || 1.14.0-0 - 1.15.1 || 3.7.3-20221108184443 - 3.7.3-canary.fde5adf63 || >=3.8.0-20221206221533",
+          "fixAvailable": {
+            "name": "@firebase/rules-unit-testing",
+            "version": "2.0.7",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "@firebase/firestore-compat",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            "@firebase/firestore"
+          ],
+          "effects": [
+            "firebase"
+          ],
+          "range": "<=0.0.900-exp.520ca39d0 || 0.2.3-20221108184443 - 0.2.3-canary.fde5adf63 || >=0.3.0-20221206221533",
+          "fixAvailable": {
+            "name": "@firebase/rules-unit-testing",
+            "version": "2.0.7",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "@firebase/rules-unit-testing",
+          "severity": "high",
+          "isDirect": true,
+          "via": [
+            "firebase"
+          ],
+          "effects": [],
+          "range": "1.1.0-2020103231751 - 1.1.0-canary.f69db37ca || 1.1.4-2020112174150 || 1.2.4-202121002818 - 1.2.4-202121018311 || 2.0.2-202202622812 - 2.0.2-canary.7f959622d || 2.0.5-20221025194556 - 2.0.5-canary.fde5adf63 || 2.0.6-20230131204242 - 2.0.6-canary.d071bd1ac || 2.0.7-20230203174750 - 2.0.7-canary.fe7da7ec3 || >=3.0.0-20230706020734",
+          "fixAvailable": {
+            "name": "@firebase/rules-unit-testing",
+            "version": "2.0.7",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "@google-cloud/pubsub",
+          "severity": "moderate",
+          "isDirect": false,
+          "via": [
+            "@opentelemetry/core"
+          ],
+          "effects": [
+            "firebase-tools"
+          ],
+          "range": "5.1.0 - 6.0.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "@grpc/grpc-js",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            {
+              "name": "@grpc/grpc-js",
+              "title": "@grpc/grpc-js: In certain configurations, getAuthContext can return unauthorized certificates as though they were authorized",
+              "url": "https://github.com/advisories/GHSA-m9gg-hp2v-232j",
+              "severity": "high",
+              "range": "<1.13.6"
+            },
+            {
+              "name": "@grpc/grpc-js",
+              "title": "@grpc/grpc-js: The server transmits some error messages thrown by method handlers to the client in status messages",
+              "url": "https://github.com/advisories/GHSA-f596-whhp-79r4",
+              "severity": "low",
+              "range": "<1.13.6"
+            }
+          ],
+          "effects": [
+            "@firebase/firestore"
+          ],
+          "range": "<=1.13.5",
+          "fixAvailable": {
+            "name": "@firebase/rules-unit-testing",
+            "version": "2.0.7",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "@opentelemetry/core",
+          "severity": "moderate",
+          "isDirect": false,
+          "via": [
+            {
+              "name": "@opentelemetry/core",
+              "title": "OpenTelemetry Core: Unbounded memory allocation in W3C Baggage propagation",
+              "url": "https://github.com/advisories/GHSA-8988-4f7v-96qf",
+              "severity": "moderate",
+              "range": "<2.8.0"
+            }
+          ],
+          "effects": [
+            "@google-cloud/pubsub"
+          ],
+          "range": "<2.8.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "basic-ftp",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            {
+              "name": "basic-ftp",
+              "title": "basic-ftp: Quadratic-time CPU denial of service in Client.list() Unix directory-listing parser (RE_LINE backtracking)",
+              "url": "https://github.com/advisories/GHSA-c475-qrg2-pj4r",
+              "severity": "high",
+              "range": "<=6.2.0"
+            }
+          ],
+          "effects": [
+            "get-uri"
+          ],
+          "range": "<=6.2.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "braces",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            {
+              "name": "braces",
+              "title": "braces vulnerable to stack-exhaustion denial of service through deeply nested patterns",
+              "url": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+              "severity": "high",
+              "range": "<=3.0.3"
+            }
+          ],
+          "effects": [
+            "chokidar"
+          ],
+          "range": "*",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "chokidar",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            "braces"
+          ],
+          "effects": [
+            "firebase-tools"
+          ],
+          "range": "2.0.0 - 3.6.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "firebase",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            "@firebase/firestore",
+            "@firebase/firestore-compat"
+          ],
+          "effects": [
+            "@firebase/rules-unit-testing"
+          ],
+          "range": "0.900.22 || 6.0.2-0 - 6.0.2-canary.42eae23 || 6.0.3-0 - 6.0.4-canary.bc4a844 || 7.9.1-0 - 7.9.1-canary.0396117e || 7.13.2-0 - 7.13.2-canary.ce3addba || 7.14.0-0 - 7.15.1 || 8.10.0-20217172214 - 8.10.0-canary.f40c0db53 || 9.0.0-20217250818 - 9.0.0-canary.d0d3acb10 || 9.0.1-2021727231341 - 9.0.1-canary.e039e1472 || 9.0.2-2021891633 - 9.0.2-canary.ff9baf70c || 9.0.3-202181503543 - 9.1.0-canary.f7d8324a1 || 9.1.1-2021830195733 - 9.1.1-canary.e70de6201 || 9.1.2-20219523556 - 9.1.2-canary.fc1d36497 || 9.13.1-20221108184443 - 9.14.0-canary.fde5adf63 || >=9.15.0-20221206221533",
+          "fixAvailable": {
+            "name": "@firebase/rules-unit-testing",
+            "version": "2.0.7",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "firebase-tools",
+          "severity": "high",
+          "isDirect": true,
+          "via": [
+            "@google-cloud/pubsub",
+            "chokidar",
+            "proxy-agent"
+          ],
+          "effects": [],
+          "range": ">=6.9.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "get-uri",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            "basic-ftp"
+          ],
+          "effects": [
+            "pac-proxy-agent"
+          ],
+          "range": ">=5.0.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "pac-proxy-agent",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            "get-uri"
+          ],
+          "effects": [
+            "proxy-agent"
+          ],
+          "range": ">=6.0.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        },
+        {
+          "name": "proxy-agent",
+          "severity": "high",
+          "isDirect": false,
+          "via": [
+            "pac-proxy-agent"
+          ],
+          "effects": [
+            "firebase-tools"
+          ],
+          "range": ">=6.0.0",
+          "fixAvailable": {
+            "name": "firebase-tools",
+            "version": "14.23.0",
+            "isSemVerMajor": true
+          }
+        }
+      ]
+    },
+    "rootProduction": {
+      "scope": "Raiz sem devDependencies: não há dependências de produção declaradas.",
+      "command": "npm audit --omit=dev --json --offline=false",
+      "counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "packages": []
+    },
+    "functionsProduction": {
+      "scope": "Cloud Functions: dependências de produção.",
+      "command": "npm audit --omit=dev --json --offline=false",
+      "counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "packages": []
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { calculateBusinessAnalytics, previousPeriodBounds } from "../business-analytics-core.mjs";
+import { calculateBusinessAnalytics, previousPeriodBounds } from "../assets/js/business-analytics-core.mjs";
 
 const day = 24 * 60 * 60 * 1000;
 const start = new Date(2026, 7, 20).getTime();

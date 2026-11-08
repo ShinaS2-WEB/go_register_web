@@ -8,6 +8,15 @@ const PAYMENT_ALIASES = Object.freeze({
 });
 const PAYMENT_METHODS = Object.freeze(["CASH", "PIX", "DEBIT_CARD", "CREDIT_CARD"]);
 
+function validDocumentId(value, maxLength = 128) {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength
+    && value !== "." && value !== ".." && !/[\/\\\x00-\x1f\x7f]/.test(value);
+}
+
+function activeProfile(data) {
+  return data && (!Object.hasOwn(data, "isActive") || data.isActive === true);
+}
+
 function normalizePaymentMethod(value) {
   const normalized = String(value ?? "").trim().toUpperCase();
   return PAYMENT_ALIASES[normalized] || normalized;
@@ -60,4 +69,4 @@ function dateInputBounds(value, timezone = "America/Belem") {
   return [zonedMidnight(year, month, day, timezone), zonedMidnight(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), timezone)];
 }
 
-module.exports = { PAYMENT_METHODS, normalizePaymentMethod, parseMoneyToCents, safeCsvCell, dateInputBounds, zonedParts };
+module.exports = { PAYMENT_METHODS, normalizePaymentMethod, parseMoneyToCents, safeCsvCell, dateInputBounds, zonedParts, validDocumentId, activeProfile };

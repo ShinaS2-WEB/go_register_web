@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildInternalAlerts } from "../alerts-core.mjs";
+import { buildInternalAlerts } from "../assets/js/alerts-core.mjs";
 
 const now = new Date(2026, 7, 29, 14).getTime();
 

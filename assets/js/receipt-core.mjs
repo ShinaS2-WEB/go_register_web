@@ -1,4 +1,4 @@
-import qrcode from "./assets/vendor/qrcode.mjs";
+import qrcode from "../vendor/qrcode.mjs";
 
 export function receiptSubtotalCents(sale, items = []) {
   const saved = Number(sale.totalAmount);
