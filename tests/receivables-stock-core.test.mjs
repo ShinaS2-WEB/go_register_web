@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel} from '../assets/js/receivables-stock-core.mjs';
+import {validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel, incomePresentation, isReceivableIncome} from '../assets/js/receivables-stock-core.mjs';
 
 const item = {productId: 1, name: 'Cabo USB', quantity: 1.5, unitPriceCents: 1000};
+test('extrato separa cliente e detalhes sem repetir valor nem expor vínculo interno', () => {
+  const entry = {category:'RECEIVABLE_PAYMENT:codigo-interno', description:'RAFAEL CUECA PAGOU R$ 97,50 — TIRADA COM LUCAS TESTE1 — BOLSACHEER E ROLSE × 1'};
+  assert.equal(isReceivableIncome(entry), true);
+  assert.deepEqual(incomePresentation(entry), {title:'RAFAEL CUECA pagou', details:['TIRADA COM LUCAS TESTE1', 'BOLSACHEER E ROLSE × 1']});
+  assert.deepEqual(incomePresentation({...entry, description:'JOSE PAGOU R$\u00a010,00'}), {title:'JOSE pagou', details:[]});
+  assert.deepEqual(incomePresentation({...entry, description:'Descrição antiga'}), {title:'Pagamento de cliente', details:['Descrição antiga']});
+  assert.deepEqual(incomePresentation({description:'Entrada de troco', category:'Outros'}), {title:'Entrada de troco', details:[]});
+});
 test('quantidades fracionadas geram valor em centavos e rejeitam entradas inválidas', () => {
   assert.equal(validateStockItems([item]), 1500);
   assert.equal(validateStockItems([]), 0);

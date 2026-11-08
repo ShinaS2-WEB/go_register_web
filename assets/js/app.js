@@ -1,7 +1,7 @@
 import { verifyCancellationHash } from "./password-core.mjs";
 import { installKeyboardSupport, rememberFocus } from "./keyboard.mjs";
 import { receiptSubtotalCents, receiptQrSvg } from "./receipt-core.mjs";
-import { validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel } from "./receivables-stock-core.mjs";
+import { validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel, incomePresentation, isReceivableIncome } from "./receivables-stock-core.mjs";
 import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
 import {
   getFirestore,
@@ -1475,8 +1475,8 @@ function allTransactions() {
   const entries = state.data.entries.map((item) => ({
     id: item.id,
     kind: "entry",
-    title: item.description || "Entrada",
-    subtitle: item.category || paymentMethodLabel(item.paymentMethod),
+    ...incomePresentation(item),
+    subtitle: paymentMethodLabel(item.paymentMethod),
     amount: Number(item.amount) || 0,
     timestamp: Number(item.timestamp) || 0,
     isCancelled: Boolean(item.isCancelled),
@@ -1487,7 +1487,7 @@ function allTransactions() {
     id: item.id,
     kind: "exit",
     title: item.description || "Saida",
-    subtitle: item.category || paymentMethodLabel(item.paymentMethod),
+    subtitle: paymentMethodLabel(item.paymentMethod),
     amount: Number(item.amount) || 0,
     timestamp: Number(item.timestamp) || 0,
     isCancelled: Boolean(item.isCancelled),
@@ -1588,8 +1588,9 @@ function renderTransactionRow(item) {
   const cancelledClass = item.isCancelled ? " transaction-row--cancelled" : "";
   return `
     <div class="transaction-row${cancelledClass}">
-      <div>
+      <div class="transaction-content">
         <strong><span class="transaction-title">${escapeHtml(item.title)}</span> ${item.isCancelled ? `<span class="badge bad">CANCELADA</span>` : ""}</strong>
+        ${(item.details || []).map(detail => `<div class="transaction-detail">${escapeHtml(detail)}</div>`).join("")}
         <div class="muted">${escapeHtml(item.subtitle)} · ${item.timestamp ? dateTime.format(new Date(item.timestamp)) : "-"}</div>
       </div>
       <div class="row-actions">
@@ -2289,7 +2290,7 @@ function reportConsolidatedRows(sales, financialMovements, manualStockEntries) {
       type: isExit ? "SAIDA" : "VENDA MANUAL",
       typeClass: isExit ? "bad" : "manual",
       description: item.description,
-      detail: `${paymentMethodGroupLabel(item.paymentMethod)}${item.category && item.category !== "-" ? ` - ${item.category}` : ""}`,
+      detail: `${paymentMethodGroupLabel(item.paymentMethod)}${!isReceivableIncome(item) && item.category && item.category !== "-" ? ` - ${item.category}` : ""}`,
       quantity: "-",
       amount: (isExit ? -1 : 1) * item.amount,
       amountClass: isExit ? "minus" : "plus",

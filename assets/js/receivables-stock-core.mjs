@@ -30,3 +30,19 @@ export function receivablePaymentDescription(account, amountCents) {
 export function stockItemsLabel(account) {
   return [account.description, ...(account.stockItems || []).map(item => `${item.name} × ${item.quantity}`)].filter(Boolean).join(" — ") || "Conta manual";
 }
+
+// O vínculo interno permanece salvo; somente sua apresentação é simplificada.
+export function isReceivableIncome(entry) {
+  return String(entry.category || "").startsWith("RECEIVABLE_PAYMENT:");
+}
+
+export function incomePresentation(entry) {
+  const description = String(entry.description || "").trim();
+  if (!isReceivableIncome(entry)) return {title: description || "Entrada", details: []};
+  const payment = description.match(/^(.*?)\s+PAGOU\s+R\$\s*[\d.,]+(?:\s+—\s+([\s\S]*))?$/i);
+  if (!payment) return {title: "Pagamento de cliente", details: description ? [description] : []};
+  return {
+    title: `${payment[1]} pagou`,
+    details: (payment[2] || "").split(" — ").map(part => part.trim()).filter(Boolean)
+  };
+}
