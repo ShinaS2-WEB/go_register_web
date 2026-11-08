@@ -165,7 +165,7 @@ test("lancamento pode ser cancelado ou apagado sem depender do Blaze", async () 
   assert.match(cancellationSource, /paymentSnapshot\.docs\.forEach/);
   assert.match(cancellationSource, /batch\.delete\(reference\)/);
   assert.match(cancellationSource, /status: "CANCELLED"/);
-  assert.match(cancellationSource, /updateDoc\(reference/);
+  assert.match(cancellationSource, /transaction\.update\(reference/);
   assert.match(cancellationSource, /alreadyCancelled/);
   assert.match(cancellationSource, /"PAID", "CANCELLED"/);
   assert.doesNotMatch(app, /cancelReceivableCallable/);
@@ -193,7 +193,7 @@ test("backup operacional inclui o modulo sem dados de cobranca do plano", async 
   assert.doesNotMatch(backupSource, /billing|planPrice|monthlyPrice|subscriptionPrice|passwordHash|sessionToken/i);
 });
 
-test("fluxo de recebimento nao grava entrada financeira nem venda", async () => {
+test("recebimento grava entrada financeira atomicamente sem duplicar venda", async () => {
   const app = await readFile(path.join(root, "app.js"), "utf8");
   const start = app.indexOf("function openReceivablePaymentModal");
   const end = app.indexOf("function openReceivablePaymentHistory", start);
@@ -205,7 +205,9 @@ test("fluxo de recebimento nao grava entrada financeira nem venda", async () => 
   assert.match(paymentSource, /clearReceivablePaymentRetry\(operation\.scope, paymentId\)/);
   assert.match(app, /O navegador bloqueou o armazenamento seguro da tentativa/);
   assert.match(paymentSource, /const timestamp = Math\.max\(/);
-  assert.doesNotMatch(paymentSource, /financial_entries|collections\.entries|collections\.sales/);
+  assert.match(paymentSource, /transaction\.set\(entryRef/);
+  assert.match(paymentSource, /receivableEntryId\(paymentId\)/);
+  assert.doesNotMatch(paymentSource, /collections\.sales/);
 });
 
 test("backup aguarda entitlement e snapshots completos", async () => {

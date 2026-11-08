@@ -9,10 +9,8 @@ service cloud.firestore {
           || get(/databases/$(database)/documents/platform_admins/$(request.auth.uid)).data.isActive == true);
     }
     function activeCompany(companyId) {
-      return exists(/databases/$(database)/documents/companies/$(companyId))
-        && get(/databases/$(database)/documents/companies/$(companyId)).data.isActive == true
-        && (!('dataDeletionInProgress' in get(/databases/$(database)/documents/companies/$(companyId)).data)
-          || get(/databases/$(database)/documents/companies/$(companyId)).data.dataDeletionInProgress != true);
+      let company = get(/databases/$(database)/documents/companies/$(companyId)).data;
+      return company.isActive == true && company.get('dataDeletionInProgress', false) != true;
     }
     function companyProfile(companyId) {
       return get(/databases/$(database)/documents/companies/$(companyId)/users/$(request.auth.uid)).data;
@@ -221,8 +219,8 @@ service cloud.firestore {
     function activeRestoreSession(companyId) {
       let sessionId = restoreSessionId();
       let sessionPath = /databases/$(database)/documents/companies/$(companyId)/settings/$(sessionId);
-      return companyAdmin(companyId)
-        && exists(sessionPath)
+      return exists(sessionPath)
+        && companyAdmin(companyId)
         && get(sessionPath).data.createdByUid == request.auth.uid
         && get(sessionPath).data.expiresAt >= request.time.toMillis();
     }
@@ -264,7 +262,8 @@ service cloud.firestore {
       return data.keys().hasOnly(['id', 'customerId', 'customerName', 'description',
           'originalAmountCents', 'outstandingAmountCents', 'createdAt', 'dueAt', 'status',
           'lastPaymentId', 'lastPaymentAt', 'createdByUid', 'updatedAt', 'updatedByUid',
-          'empresa_id', 'companyId'])
+          'empresa_id', 'companyId', 'stockItems', 'stockReturned'])
+        && validStockItems(data)
         && strictTenant(data, companyId)
         && boundedDocumentId(data.id)
         && data.id == receivableId
@@ -307,6 +306,98 @@ service cloud.firestore {
             && data.lastPaymentAt > 0)
           || data.status == 'CANCELLED');
     }
+    // Optional immutable stock snapshots; legacy manual accounts have no items.
+    function validStockItem(item) {
+      return item is map && item.keys().hasOnly(['productId', 'name', 'quantity', 'unitPriceCents'])
+        && item.productId is int && item.productId > 0 && item.productId <= 9007199254740991
+        && item.name is string && item.name.size() > 0 && item.name.size() <= 160
+        && item.quantity is number && item.quantity > 0 && item.quantity <= 1000000
+        && boundedPositiveMoneyCents(item.unitPriceCents);
+    }
+    function validStockItems(data) {
+      let items = data.get('stockItems', []);
+      return items is list && items.size() <= 5
+        && ((request.method == 'update' && items == resource.data.get('stockItems', [])) || items.size() == 0 || (linkedStockItem(data, 0)
+        && (items.size() < 2 || linkedStockItem(data, 1))
+        && (items.size() < 3 || linkedStockItem(data, 2))
+        && (items.size() < 4 || linkedStockItem(data, 3))
+        && (items.size() < 5 || linkedStockItem(data, 4))))
+        && data.get('stockReturned', false) is bool;
+    }
+    // Item validation is evaluated on its immutable stock movement, keeping each
+    // document below Firestore's expression budget. The parent requires all links.
+    function linkedStockItem(data, index) {
+      let movementId = 'rcv_' + data.id + '_' + string(index);
+      return getAfter(/databases/$(database)/documents/companies/$(data.companyId)/stock_movements/$(movementId)).data.receivableStockItem == data.stockItems[index];
+    }
+    function validReceivableMovement(companyId, documentId) {
+      let data = request.resource.data;
+      let item = data.receivableStockItem;
+      let product = /databases/$(database)/documents/companies/$(companyId)/products/$(string(item.productId));
+      return data.keys().hasOnly(['id', 'productId', 'quantity', 'timestamp', 'type', 'reason', 'empresa_id', 'companyId', 'receivableId', 'receivableStockItem', 'receivableItemIndex'])
+        && validStockItem(item) && boundedDocumentId(data.receivableId)
+        && data.receivableItemIndex is int && data.receivableItemIndex >= 0 && data.receivableItemIndex < 5
+        && documentId == 'rcv_' + data.receivableId + '_' + string(data.receivableItemIndex)
+        && data.empresa_id == companyId && data.get('companyId', companyId) == companyId
+        && data.id is int && data.id != 0 && data.id >= -9007199254740991 && data.id <= 9007199254740991
+        && data.productId == item.productId && data.quantity == -item.quantity && data.type == 'EXIT'
+        && data.timestamp is int && data.timestamp >= 0 && data.timestamp <= request.time.toMillis() + 300000
+        && data.reason is string && data.reason.size() <= 500
+        && (activeRestoreSession(companyId) || (request.method == 'create'
+          && !exists(receivablePath(companyId, data.receivableId))
+          && getAfter(receivablePath(companyId, data.receivableId)).data.stockItems[data.receivableItemIndex] == item
+          && get(product).data.stockQuantity >= item.quantity
+          && getAfter(product).data.stockQuantity == get(product).data.stockQuantity - item.quantity));
+    }
+    function validReceivableCustomer(companyId, data) {
+      let customer = get(/databases/$(database)/documents/companies/$(companyId)/customers/$(data.customerId)).data;
+      return customer.empresa_id == companyId && customer.companyId == companyId
+        && customer.isActive == true && customer.name == data.customerName;
+    }
+    function validOptionalEntryId(data) {
+      return !('financialEntryId' in data) || (data.financialEntryId is int
+        && data.financialEntryId < 0 && data.financialEntryId >= -9007199254740991);
+    }
+    // Linked income cannot be edited/deleted independently of the customer debt.
+    function validLinkedIncome(data, companyId, documentId) {
+      return data.keys().hasOnly(['id', 'timestamp', 'amount', 'description', 'category',
+          'paymentMethod', 'cashRegisterId', 'isCancelled', 'empresa_id', 'companyId', 'receivableId', 'receivablePaymentId'])
+        && data.empresa_id == companyId && data.get('companyId', companyId) == companyId
+        && data.id is int && data.id < 0 && data.id >= -9007199254740991 && string(data.id) == documentId
+        && boundedDocumentId(data.receivableId) && boundedDocumentId(data.receivablePaymentId)
+        && data.description is string && data.description.size() <= 3000
+        && data.category == 'RECEIVABLE_PAYMENT:' + data.receivablePaymentId
+        && data.paymentMethod in ['CASH', 'PIX', 'DEBIT_CARD', 'CREDIT_CREDIT', 'CREDIT_CARD']
+        && data.amount is number && data.amount > 0 && data.amount <= 999999999.99
+        && data.timestamp is int && data.timestamp >= 0 && data.timestamp <= request.time.toMillis() + 300000
+        && data.cashRegisterId is int && data.cashRegisterId >= 0
+        && data.isCancelled is bool;
+    }
+    function linkedIncomeWrite(companyId, documentId) {
+      let path = /databases/$(database)/documents/companies/$(companyId)/financial_entries/$(documentId);
+      let linkedBefore = exists(path) && ('receivablePaymentId' in resource.data);
+      let linkedAfter = 'receivablePaymentId' in request.resource.data;
+      let data = request.resource.data;
+      return (!linkedBefore && !linkedAfter)
+        || (linkedAfter && validLinkedIncome(data, companyId, documentId)
+          && (activeRestoreSession(companyId)
+            || (!exists(path) && !data.isCancelled
+              && !exists(paymentPath(companyId, data.receivablePaymentId))
+              && getAfter(paymentPath(companyId, data.receivablePaymentId)).data.financialEntryId == data.id
+              && getAfter(paymentPath(companyId, data.receivablePaymentId)).data.amountCents / 100.0 == data.amount
+              && getAfter(paymentPath(companyId, data.receivablePaymentId)).data.receivableId == data.receivableId)
+            || (linkedBefore && !resource.data.isCancelled && data.isCancelled
+              && data.diff(resource.data).affectedKeys().hasOnly(['isCancelled'])
+              && getAfter(receivablePath(companyId, data.receivableId)).data.status == 'CANCELLED')));
+    }
+    function validPaymentEntryLink(companyId, paymentId, payment) {
+      let path = /databases/$(database)/documents/companies/$(companyId)/financial_entries/$(string(payment.financialEntryId));
+      let entry = getAfter(path).data;
+      return !exists(path) && entry.receivablePaymentId == paymentId
+        && entry.receivableId == payment.receivableId && entry.empresa_id == companyId
+        && entry.amount == payment.amountCents / 100.0 && entry.timestamp == payment.timestamp
+        && entry.isCancelled == false;
+    }
     function validReceivableBeforePayment(data) {
       return boundedPositiveMoneyCents(data.originalAmountCents)
         && data.outstandingAmountCents is int
@@ -326,7 +417,10 @@ service cloud.firestore {
       return resource.data.status in ['OPEN', 'PARTIAL', 'PAID']
         && request.resource.data.status == 'CANCELLED'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status', 'updatedAt', 'updatedByUid'])
+          'status', 'updatedAt', 'updatedByUid', 'stockReturned'])
+        && validStockItems(request.resource.data)
+        && request.resource.data.get('stockItems', []) == resource.data.get('stockItems', [])
+        && (!resource.data.get('stockReturned', false) || request.resource.data.get('stockReturned', false))
         && currentPaymentTimestamp(request.resource.data.updatedAt)
         && request.resource.data.updatedAt >= resource.data.updatedAt
         && request.resource.data.updatedByUid == request.auth.uid;
@@ -346,7 +440,8 @@ service cloud.firestore {
     }
     function validPayment(data, companyId, paymentId) {
       return data.keys().hasOnly(['id', 'receivableId', 'customerId', 'amountCents',
-          'paymentMethod', 'timestamp', 'notes', 'createdByUid', 'empresa_id', 'companyId'])
+          'paymentMethod', 'timestamp', 'notes', 'createdByUid', 'empresa_id', 'companyId', 'financialEntryId'])
+        && validOptionalEntryId(data)
         && strictTenant(data, companyId)
         && boundedDocumentId(data.id)
         && data.id == paymentId
@@ -363,7 +458,8 @@ service cloud.firestore {
     }
     function validRestoredPayment(data, companyId, paymentId) {
       return data.keys().hasOnly(['id', 'receivableId', 'customerId', 'amountCents',
-          'paymentMethod', 'timestamp', 'notes', 'createdByUid', 'empresa_id', 'companyId'])
+          'paymentMethod', 'timestamp', 'notes', 'createdByUid', 'empresa_id', 'companyId', 'financialEntryId'])
+        && validOptionalEntryId(data)
         && strictTenant(data, companyId)
         && boundedDocumentId(data.id)
         && data.id == paymentId
@@ -393,6 +489,7 @@ service cloud.firestore {
       let before = get(linkedReceivable).data;
       let after = getAfter(linkedReceivable).data;
       return validPayment(payment, companyId, paymentId)
+        && (!('financialEntryId' in payment) || validPaymentEntryLink(companyId, paymentId, payment))
         && exists(linkedReceivable)
         && existsAfter(linkedReceivable)
         && before.lastPaymentId != paymentId
@@ -550,21 +647,18 @@ service cloud.firestore {
             && recentClientTimestamp(request.resource.data.createdAt)
             && request.resource.data.updatedAt == request.resource.data.createdAt
             && request.resource.data.status == 'OPEN'
+            && request.resource.data.get('stockReturned', false) == false
             && request.resource.data.createdByUid == request.auth.uid
             && request.resource.data.updatedByUid == request.auth.uid
-            && exists(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId))
-            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.empresa_id == companyId
-            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.companyId == companyId
-            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.isActive == true
-            && get(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)).data.name == request.resource.data.customerName);
+            && validReceivableCustomer(companyId, request.resource.data));
         allow update: if platformAdmin()
           || (activeRestoreSession(companyId)
             && validReceivable(request.resource.data, companyId, receivableId)
             && existsAfter(/databases/$(database)/documents/companies/$(companyId)/customers/$(request.resource.data.customerId)))
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
-            && (validReceivablePaymentUpdate(companyId, receivableId)
-              || validReceivableCancellationUpdate()));
+            && ((request.resource.data.status == 'CANCELLED' && validReceivableCancellationUpdate())
+              || (request.resource.data.status != 'CANCELLED' && validReceivablePaymentUpdate(companyId, receivableId))));
         allow delete: if platformAdmin()
           || (companyUser(companyId)
             && receivablesProvisioned(companyId)
@@ -604,10 +698,14 @@ service cloud.firestore {
           && (platformAdmin() || companyUser(companyId));
         allow create, update: if collectionName in ['products', 'sales', 'categories', 'suppliers',
           'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
+          && (collectionName != 'stock_movements' || (!documentId.matches('rcv_.*') && !('receivableStockItem' in request.resource.data)) || validReceivableMovement(companyId, documentId))
+          && (collectionName != 'financial_entries' || linkedIncomeWrite(companyId, documentId))
           && (platformAdmin() || (companyUser(companyId)
             && belongsToCompany(request.resource.data, companyId)));
         allow delete: if collectionName in ['products', 'sales', 'categories', 'suppliers',
           'cash_registers', 'financial_entries', 'financial_exits', 'stock_movements']
+          && (collectionName != 'stock_movements' || !documentId.matches('rcv_.*') || platformAdmin() || activeRestoreSession(companyId))
+          && (collectionName != 'financial_entries' || !('receivablePaymentId' in resource.data) || platformAdmin() || activeRestoreSession(companyId))
           && (platformAdmin() || (companyUser(companyId)
             && belongsToCompany(resource.data, companyId)));
       }

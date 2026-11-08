@@ -1,5 +1,6 @@
 import { installKeyboardSupport, rememberFocus } from "./keyboard.mjs";
 import { receiptSubtotalCents, receiptQrSvg } from "./receipt-core.mjs";
+import { validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel } from "./receivables-stock-core.mjs";
 import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
 import {
   getFirestore,
@@ -2028,7 +2029,7 @@ function renderReceivables() {
   );
   const matchingAccounts = filteredByStatus.filter((receivable) => {
     if (!search) return true;
-    return `${receivable.customerName || ""} ${receivable.description || ""}`.toLocaleLowerCase("pt-BR").includes(search);
+    return `${receivable.customerName || ""} ${stockItemsLabel(receivable)}`.toLocaleLowerCase("pt-BR").includes(search);
   });
   const accounts = groupReceivablesByCustomer(matchingAccounts);
   const customers = state.receivables.customers
@@ -2076,7 +2077,7 @@ function renderReceivables() {
     const hasPhone = Boolean(String(customer?.phone || "").replace(/\D/g, ""));
     return `<tr>
                 <td>${customer ? `<button type="button" class="receivable-customer-link" data-receivable-customer-history="${escapeHtml(docKey(customer))}" aria-haspopup="dialog">${escapeHtml(receivable.customerName || customer.name || "Cliente")}</button>` : `<strong>${escapeHtml(receivable.customerName || "Cliente")}</strong>`}</td>
-                <td>${escapeHtml(receivable.description || "Conta manual")}</td>
+                <td>${escapeHtml(stockItemsLabel(receivable))}</td>
                 <td>${money.format((Number(receivable.originalAmountCents) || 0) / 100)}</td>
                 <td><strong>${money.format((Number(receivable.outstandingAmountCents) || 0) / 100)}</strong></td>
                 <td>${escapeHtml(formatReceivableDueDate(receivable.dueAt))}</td>
@@ -3108,9 +3109,15 @@ function openReceivableModal(preselectedCustomerId = "") {
   }
 
   const id = randomUuid();
+  let stockItems = [];
   const today = millisToLocalDateInput(Date.now());
-  openModal("Nova conta manual", `
+  openModal("Nova conta a receber", `
     <div class="form-grid">
+      <p class="form-grid-wide">Produtos saem do estoque ao salvar. O pagamento entrará no rendimento quando for recebido.</p>
+${select("stockProduct", "Produto (opcional)", [["", "Selecionar produto"], ...state.data.products.filter(p => productTracksStock(p) && Number(p.stockQuantity) > 0).sort((a,b) => String(a.name).localeCompare(String(b.name), "pt-BR")).map(p => [p.id, `${p.name} — estoque: ${p.stockQuantity}`])], "")}
+      <label class="field"><span>Quantidade</span><input name="stockQuantity" inputmode="decimal" value="1" /></label>
+      <button type="button" class="btn secondary" id="addReceivableProduct">Adicionar / atualizar produto</button>
+      <div class="form-grid-wide" id="receivableStockItems"></div>
       ${select("customerId", "Cliente *", customers.map((customer) => [customer.id || customer.docId, customer.name]), preselectedCustomerId)}
       <label class="field"><span>Valor da conta *</span><span class="input-wrap">${icon("payments")}<input name="amount" inputmode="decimal" placeholder="0,00" required /></span></label>
       <label class="field"><span>Vencimento *</span><span class="input-wrap">${icon("event")}<input name="dueDate" type="date" value="${today}" required /></span></label>
@@ -3122,15 +3129,17 @@ function openReceivableModal(preselectedCustomerId = "") {
     const customer = findReceivableCustomer(customerId);
     if (!customer || customer.isActive === false) throw new Error("Selecione um cliente ativo.");
     const description = String(form.get("description") || "").trim();
-    if (!description) throw new Error("Informe uma descrição para a conta.");
-    const originalAmountCents = parseMoneyToCents(form.get("amount"));
+    if (!description && !stockItems.length) throw new Error("Informe uma descrição ou selecione produtos.");
+    const originalAmountCents = stockItems.length ? validateStockItems(stockItems) : parseMoneyToCents(form.get("amount"));
     if (!Number.isSafeInteger(originalAmountCents) || originalAmountCents <= 0) {
       throw new Error("Informe um valor válido maior que zero, por exemplo 1.234,56.");
     }
     const dueAt = localDateInputToMillis(form.get("dueDate"));
     if (!dueAt) throw new Error("Informe uma data de vencimento valida.");
     const now = Date.now();
-    await setDoc(tenantDocument(receivablesCollections.receivables, id), tenantPayload({
+    const payload = tenantPayload({
+      stockItems,
+      stockReturned: false,
       id,
       customerId: String(customer.id || customer.docId),
       customerName: String(customer.name || "Cliente"),
@@ -3145,12 +3154,57 @@ function openReceivableModal(preselectedCustomerId = "") {
       createdByUid: receivableActorUid(),
       updatedAt: now,
       updatedByUid: receivableActorUid(),
-    }));
+    });
+    const reference = tenantDocument(receivablesCollections.receivables, id);
+    const movementIds = stockItems.map(() => receivableEntryId(randomUuid()));
+    await runTransaction(db, async transaction => {
+      const existing = await transaction.get(reference);
+      if (existing.exists()) {
+        const saved = existing.data();
+        if (saved.customerId !== customerId || saved.originalAmountCents !== originalAmountCents ||
+            saved.description !== description || saved.dueAt !== dueAt || JSON.stringify(saved.stockItems || []) !== JSON.stringify(stockItems)) throw Error("Esta conta já foi salva com outros dados. Feche e abra o formulário.");
+        return;
+      }
+      const customerSnapshot = await transaction.get(tenantDocument(receivablesCollections.customers, customerId));
+      if (!customerSnapshot.exists() || customerSnapshot.data().isActive === false) throw Error("Cliente indisponível.");
+      const products = await Promise.all(stockItems.map(item => transaction.get(tenantDocument(collections.products, item.productId))));
+      products.forEach((snapshot, index) => {
+        const item = stockItems[index], stock = Number(snapshot.data()?.stockQuantity);
+        if (!snapshot.exists() || !productTracksStock(snapshot.data()) || !Number.isFinite(stock) || stock < item.quantity) throw Error(`Estoque insuficiente ou produto sem controle de estoque: ${item.name}.`);
+        transaction.update(snapshot.ref, { stockQuantity: stock - item.quantity });
+        transaction.set(tenantDocument(collections.stockMovements, `rcv_${id}_${index}`), tenantPayload({
+          receivableId: id, receivableItemIndex: index, receivableStockItem: item,
+          id: movementIds[index], productId: item.productId, quantity: -item.quantity, type: "EXIT", timestamp: now,
+          reason: `Conta a receber ${id}: ${customer.name}`
+        }));
+      });
+      transaction.set(reference, payload);
+    });
     await writeAuditLog({
       action: "RECEIVABLE_CREATED", entityType: "receivable", entityId: id,
       description: `Conta lançada para ${customer.name}.`, amountCents: originalAmountCents
     });
-    toast("Conta manual cadastrada.");
+    toast("Conta cadastrada e estoque atualizado.");
+  });
+  const modal = document.querySelector("#modalRoot");
+  const refreshStockItems = () => {
+    modal.querySelector("#receivableStockItems").innerHTML = stockItems.map(item => `<p>${escapeHtml(item.name)} × ${item.quantity} — ${money.format(Math.round(item.quantity * item.unitPriceCents) / 100)} <button class="btn secondary compact" type="button" data-remove-stock="${item.productId}">Remover</button></p>`).join("");
+    const amount = modal.querySelector('[name="amount"]');
+    amount.readOnly = stockItems.length > 0;
+    if (stockItems.length) amount.value = formatMoneyCentsInput(validateStockItems(stockItems));
+    modal.querySelector('[name="description"]').required = stockItems.length === 0;
+    modal.querySelectorAll("[data-remove-stock]").forEach(button => button.addEventListener("click", () => {
+      stockItems = stockItems.filter(item => item.productId !== Number(button.dataset.removeStock)); refreshStockItems();
+    }));
+  };
+  modal.querySelector("#addReceivableProduct").addEventListener("click", () => {
+    try {
+      const product = findById(state.data.products, Number(modal.querySelector('[name="stockProduct"]').value));
+      const quantity = Number(modal.querySelector('[name="stockQuantity"]').value.replace(",", "."));
+      if (!product || quantity > Number(product.stockQuantity)) throw Error("Selecione um produto e confira o estoque.");
+      const next = [...stockItems.filter(item => item.productId !== Number(product.id)), { productId: Number(product.id), name: String(product.name), quantity, unitPriceCents: Math.round(Number(product.sellingPrice) * 100) }];
+      validateStockItems(next); stockItems = next; refreshStockItems();
+    } catch(error) { toast(error.message); }
   });
 }
 
@@ -3240,7 +3294,20 @@ function openReceivablePaymentModal(receivableKey) {
           normalizeTimestamp(serverReceivable.lastPaymentAt),
           normalizeTimestamp(serverReceivable.updatedAt),
         );
+        const financialEntryId = receivableEntryId(paymentId);
+        const entryRef = tenantDocument(collections.entries, financialEntryId);
+        const existingEntry = await transaction.get(entryRef);
+        if (existingEntry.exists()) throw Error("Identificador financeiro já utilizado.");
+        const register = await transaction.get(tenantDocument(collections.registers, ACTIVE_REGISTER_DOCUMENT));
+        transaction.set(entryRef, tenantPayload({
+          id: financialEntryId, timestamp, amount: amountCents / 100,
+          description: receivablePaymentDescription(serverReceivable, amountCents),
+          category: `RECEIVABLE_PAYMENT:${paymentId}`, paymentMethod: paymentMethod === "CREDIT_CARD" ? "CREDIT_CREDIT" : paymentMethod,
+          cashRegisterId: register.exists() && register.data().isOpen === true ? Number(register.data().id) || 0 : 0,
+          isCancelled: false, receivableId, receivablePaymentId: paymentId
+        }));
         transaction.set(paymentReference, tenantPayload({
+          financialEntryId,
           id: paymentId,
           receivableId: String(serverReceivable.id || receivable.id || receivable.docId),
           customerId: String(serverReceivable.customerId || customerId),
@@ -3273,7 +3340,7 @@ function openReceivablePaymentModal(receivableKey) {
     }
     toast(previousPaymentConfirmed
       ? "O pagamento anterior já estava confirmado. O saldo foi atualizado sem cobrar novamente."
-      : "Pagamento registrado. Lembre-se de lançar a entrada no caixa, se necessário.");
+      : "Pagamento registrado no rendimento de hoje. Não é necessário lançar outra entrada.");
   });
 }
 
@@ -3308,13 +3375,39 @@ async function cancelReceivable(receivableKey) {
   const password = await requestCancellationPassword();
   if (!password) return;
 
+  const returnStock = !alreadyCancelled && (receivable.stockItems || []).length > 0
+    ? await openChoiceModal("Devolução de produtos", "Os produtos foram devolvidos ao estoque? Escolha Sim somente se a mercadoria voltou.", "Não", "Sim, devolver") : false;
+  if (!alreadyCancelled && !(await openConfirmModal("Confirmar cancelamento", "Os pagamentos integrados desta conta serão anulados no rendimento. Entradas manuais antigas não serão alteradas.", "Confirmar"))) return;
+
   await runAction(async () => {
     const reference = tenantDocument(collections.receivables, receivableId);
     if (!alreadyCancelled) {
-      await updateDoc(reference, {
-        status: "CANCELLED",
-        updatedAt: Date.now(),
-        updatedByUid: receivableActorUid(),
+      const before = await getDoc(reference);
+      const payments = await getDocs(query(tenantCollection(collections.payments), where("receivableId", "==", receivableId)));
+      if (payments.size > 400) throw Error("Esta conta exige cancelamento assistido devido ao número de pagamentos.");
+      const movementIds = Array.from({length:5}, () => receivableEntryId(randomUuid()));
+      await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(reference);
+        if (!snapshot.exists()) throw Error("Conta não encontrada.");
+        const current = snapshot.data();
+        if (current.status === "CANCELLED") return;
+        if (current.lastPaymentId !== before.data()?.lastPaymentId) throw Error("Um pagamento foi registrado durante o cancelamento. Tente novamente.");
+        const items = returnStock && !current.stockReturned ? current.stockItems || [] : [];
+        validateStockItems(items);
+        const products = await Promise.all(items.map(item => transaction.get(tenantDocument(collections.products, item.productId))));
+        const entries = await Promise.all(payments.docs.filter(p => Number.isSafeInteger(p.data().financialEntryId)).map(p => transaction.get(tenantDocument(collections.entries, p.data().financialEntryId))));
+        products.forEach((product, index) => {
+          if (!product.exists() || !Number.isFinite(Number(product.data().stockQuantity))) throw Error("Produto removido ou inválido. Cancele sem devolução e ajuste o estoque manualmente.");
+          transaction.update(product.ref, {stockQuantity: Number(product.data().stockQuantity) + items[index].quantity});
+          transaction.set(tenantDocument(collections.stockMovements, movementIds[index]), tenantPayload({
+            id: movementIds[index], productId: items[index].productId, quantity: items[index].quantity, type: "ENTRY", timestamp: Date.now(), reason: `Devolução da conta ${receivableId}`
+          }));
+        });
+        entries.forEach(entry => {
+          if (!entry.exists() || entry.data().receivableId !== receivableId) throw Error("Entrada financeira vinculada inválida.");
+          transaction.update(entry.ref, {isCancelled: true});
+        });
+        transaction.update(reference, { status: "CANCELLED", stockReturned: Boolean(current.stockReturned || items.length), updatedAt: Math.max(Date.now(), Number(current.updatedAt) || 0), updatedByUid: receivableActorUid() });
       });
     }
     if (deleteFromHistory) {
@@ -3353,7 +3446,7 @@ function openReceivablePaymentHistory(receivableKey) {
   document.querySelector("#modalRoot").innerHTML = `
     <div class="modal-backdrop">
       <section class="modal receivable-history-modal">
-        <header><div><h2>Histórico de pagamentos</h2><p class="muted">${escapeHtml(receivable.customerName || "Cliente")} — ${escapeHtml(receivable.description || "Conta manual")}</p></div><button class="icon-btn" type="button" data-close-modal>${icon("close")}</button></header>
+        <header><div><h2>Histórico de pagamentos</h2><p class="muted">${escapeHtml(receivable.customerName || "Cliente")} — ${escapeHtml(stockItemsLabel(receivable))}</p></div><button class="icon-btn" type="button" data-close-modal>${icon("close")}</button></header>
         <div class="receivable-history-list">
           ${payments.map((payment) => `<article class="receivable-history-row">
             <div><strong>${money.format((Number(payment.amountCents) || 0) / 100)}</strong><span>${escapeHtml(paymentMethodLabel(payment.paymentMethod))}</span></div>
@@ -3390,7 +3483,7 @@ function openReceivableCustomerPaymentHistory(customerKey) {
         <div class="customer-section-heading"><h3>${icon("receipt_long")} Todas as dívidas</h3><span class="customer-count">${accounts.length}</span></div>
         <div class="receivable-customer-accounts">
           ${accounts.map((account) => `<article class="customer-debt-card">
-            <div class="customer-debt-title"><strong>${escapeHtml(account.description || "Conta manual")}</strong>${receivableStatusBadge(receivableDisplayStatus(account))}</div>
+            <div class="customer-debt-title"><strong>${escapeHtml(stockItemsLabel(account))}</strong>${receivableStatusBadge(receivableDisplayStatus(account))}</div>
             <p class="customer-debt-due">${icon("event")} Vencimento: ${escapeHtml(formatReceivableDueDate(account.dueAt))}</p>
             <dl class="customer-debt-values"><div><dt>Valor original</dt><dd>${money.format((Number(account.originalAmountCents) || 0) / 100)}</dd></div><div><dt>Recebido</dt><dd>${money.format(payments.filter((payment) => String(payment.receivableId) === String(account.id || account.docId)).reduce((total, payment) => total + (Number(payment.amountCents) || 0), 0) / 100)}</dd></div><div><dt>Saldo</dt><dd>${money.format((Number(account.outstandingAmountCents) || 0) / 100)}</dd></div></dl>
           </article>`).join("") || `<p class="customer-empty">${icon("receipt_long")} Nenhuma dívida registrada para este cliente.</p>`}
@@ -3445,7 +3538,7 @@ function openReceivableWhatsapp(receivableKey) {
   const phone = whatsappPhone(customer?.phone);
   if (!phone) return toast("Cadastre o telefone do cliente antes de enviar a mensagem.");
   const firstName = String(customer?.name || receivable.customerName || "cliente").trim().split(/\s+/)[0];
-  const message = `Olá, ${firstName}. Lembrete da conta "${String(receivable.description || "Conta manual").trim()}" com saldo de ${money.format((Number(receivable.outstandingAmountCents) || 0) / 100)} e vencimento em ${formatReceivableDueDate(receivable.dueAt)}. Em caso de dúvida, entre em contato com ${state.company?.name || "nossa empresa"}.`;
+  const message = `Olá, ${firstName}. Lembrete da conta "${stockItemsLabel(receivable)}" com saldo de ${money.format((Number(receivable.outstandingAmountCents) || 0) / 100)} e vencimento em ${formatReceivableDueDate(receivable.dueAt)}. Em caso de dúvida, entre em contato com ${state.company?.name || "nossa empresa"}.`;
   const opened = window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
   if (opened) opened.opener = null;
   else toast("O navegador bloqueou a abertura do WhatsApp.");
@@ -3841,7 +3934,8 @@ function backupDocuments(items) {
     if (id === undefined || id === null || String(id).trim() === "") {
       throw new Error("Um registro sem identificador impediu a criação do backup.");
     }
-    return { id: String(id), data: item };
+    const { docId, ...data } = item;
+    return { id: String(id), data };
   });
 }
 
@@ -4781,6 +4875,10 @@ async function showCompletedCheckout(result) {
 }
 
 async function cancelTransaction(kind, id) {
+  if (kind === "entry") {
+    const entry = state.data.entries.find(item => String(docKey(item, item.id)) === String(id));
+    if (String(entry?.category || "").startsWith("RECEIVABLE_PAYMENT:")) return toast("Cancele este lançamento em Contas a Receber para manter o saldo do cliente consistente.");
+  }
   if (!(await requestCancellationAuthorization())) return;
   await runAction(async () => {
     if (kind === "sale") {
