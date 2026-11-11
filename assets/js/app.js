@@ -1,7 +1,7 @@
 import { verifyCancellationHash } from "./password-core.mjs";
 import { installKeyboardSupport, rememberFocus } from "./keyboard.mjs";
 import { receiptSubtotalCents, receiptQrSvg } from "./receipt-core.mjs";
-import { validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel, incomePresentation, isReceivableIncome } from "./receivables-stock-core.mjs";
+import { validateStockItems, receivableEntryId, receivablePaymentDescription, stockItemsLabel, incomePresentation, isReceivableIncome, uniqueStockProducts, requireAddedStockSelection } from "./receivables-stock-core.mjs";
 import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
 import {
   getFirestore,
@@ -120,6 +120,7 @@ const state = {
   notificationsOpen: false,
   activeRegisterControl: null,
   activeRegisterControlInitialized: false,
+  productSourceDocuments: [],
   data: {
     products: [],
     sales: [],
@@ -769,6 +770,7 @@ function clearSubscriptions() {
   state.mainSubscriptionEntitlement = null;
   state.activeRegisterControl = null;
   state.activeRegisterControlInitialized = false;
+  state.productSourceDocuments = [];
   Object.keys(state.data).forEach((key) => { state.data[key] = []; });
 }
 
@@ -921,7 +923,11 @@ function subscribe() {
       state.data[dataKey] = visibleDocuments
         .map((item) => ({ ...item.data(), docId: item.id }))
         .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
-      if (dataKey === "products") syncCartProducts();
+      if (dataKey === "products") {
+        state.productSourceDocuments = state.data.products;
+        state.data.products = uniqueStockProducts(state.data.products);
+        syncCartProducts();
+      }
       if (dataKey === "users") syncSessionUser();
       state.loadedCollections.add(key);
       state.collectionErrors.delete(key);
@@ -3123,6 +3129,7 @@ ${select("stockProduct", "Produto (opcional)", [["", "Selecionar produto"], ...s
     </div>
   `, async (form) => {
     requireReceivablesCreationAccess();
+    requireAddedStockSelection(form.get("stockProduct"));
     const customerId = String(form.get("customerId") || "");
     const customer = findReceivableCustomer(customerId);
     if (!customer || customer.isActive === false) throw new Error("Selecione um cliente ativo.");
@@ -3202,6 +3209,8 @@ ${select("stockProduct", "Produto (opcional)", [["", "Selecionar produto"], ...s
       if (!product || quantity > Number(product.stockQuantity)) throw Error("Selecione um produto e confira o estoque.");
       const next = [...stockItems.filter(item => item.productId !== Number(product.id)), { productId: Number(product.id), name: String(product.name), quantity, unitPriceCents: Math.round(Number(product.sellingPrice) * 100) }];
       validateStockItems(next); stockItems = next; refreshStockItems();
+      modal.querySelector('[name="stockProduct"]').value = "";
+      modal.querySelector('[name="stockQuantity"]').value = "1";
     } catch(error) { toast(error.message); }
   });
 }
@@ -3912,7 +3921,7 @@ function exportBackupJson() {
     companyName: state.company?.name || "Empresa",
     exportedAt: Date.now(),
     collections: {
-      products: backupDocuments(state.data.products),
+      products: backupDocuments(state.productSourceDocuments),
       sales: backupDocuments(state.data.sales),
       categories: backupDocuments(state.data.categories),
       suppliers: backupDocuments(state.data.suppliers),

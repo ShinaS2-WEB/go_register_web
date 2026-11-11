@@ -202,6 +202,10 @@ test("conta com produtos integra pagamento ao rendimento e protege vínculo", as
     });
   });
   await assertSucceeds(creation.commit()).catch(error => { throw Error(`criar conta: ${error.message.replaceAll('\n',' ')}`); });
+  for (const item of items) {
+    const savedProduct = await db.doc(`${base}/products/${item.productId}`).get();
+    if (savedProduct.data().stockQuantity !== 9) throw Error('O fiado não baixou o estoque do produto.');
+  }
   await assertFails(db.doc(`${base}/receivables/${account}`).update({stockItems:[{...items[0],quantity:-1}]}));
   await assertFails(db.doc(`${base}/receivables/${account}`).update({stockItems:[{...items[0],name:'Alterado'}]}));
   const paymentData = {id:payment,receivableId:account,customerId:customer,amountCents:1000,paymentMethod:'PIX',timestamp:now,

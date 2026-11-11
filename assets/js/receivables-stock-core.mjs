@@ -15,6 +15,27 @@ export function validateStockItems(items) {
   return total;
 }
 
+// Quando existe uma cópia legada, o documento cujo caminho corresponde ao id
+// é o mesmo que as transações de estoque usam. Não agrupar pelo nome.
+export function uniqueStockProducts(products) {
+  const grouped = new Map();
+  for (const product of products) {
+    const storedId = Number(product.id);
+    const id = Number.isSafeInteger(storedId) && storedId > 0 ? storedId : Number(product.docId);
+    if (!Number.isSafeInteger(id) || id <= 0) continue;
+    const existing = grouped.get(id);
+    const path = String(product.docId || id);
+    const oldPath = existing ? String(existing.docId || id) : '';
+    if (!existing || (path === String(id) && oldPath !== String(id)) ||
+        (oldPath !== String(id) && path < oldPath)) grouped.set(id, {...product, id});
+  }
+  return [...grouped.values()];
+}
+
+export function requireAddedStockSelection(selection) {
+  if (String(selection || '').trim()) throw Error('Clique em Adicionar / atualizar produto antes de salvar a conta, ou limpe a seleção para lançar sem produto.');
+}
+
 export function receivableEntryId(paymentId) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(paymentId)) throw Error("Identificador de pagamento inválido.");
   return -Math.max(1, Number.parseInt(paymentId.replaceAll("-", "").slice(0, 13), 16));
